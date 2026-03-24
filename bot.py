@@ -1,6 +1,7 @@
 import os
 import requests
 import asyncio
+import time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
@@ -8,7 +9,24 @@ TOKEN = "8295503667:AAEHfdeLyL158BE1qcRTLCpp0ya5BbzSFe4"
 COMLINK_URL = "http://localhost:3000"
 GUILD_ID = "j16DZ27ZQWe7UqWJP90zjg"
 
+def wait_for_comlink(max_retries=30, delay=2):
+    """Ожидает запуска Comlink, делает до 30 попыток с интервалом 2 секунды"""
+    print("⏳ Ожидание запуска Comlink...")
+    for i in range(max_retries):
+        try:
+            response = requests.get(f"{COMLINK_URL}/", timeout=2)
+            if response.status_code == 200:
+                print("✅ Comlink готов к работе!")
+                return True
+        except:
+            pass
+        print(f"   Попытка {i+1}/{max_retries}...")
+        time.sleep(delay)
+    print("❌ Comlink не запустился вовремя")
+    return False
+
 async def get_guild_roster():
+    """Получает список участников через Comlink"""
     try:
         payload = {
             "payload": {
@@ -56,6 +74,7 @@ async def get_guild_roster():
         print(f"Ошибка: {e}")
         return f"⚠️ Ошибка подключения к Comlink. Подробности: {e}", 0
 
+# --- Обработчики команд ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("📋 Показать состав гильдии", callback_data="show_roster")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -107,6 +126,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
 def main():
+    # Ждем запуска Comlink перед стартом бота
+    if not wait_for_comlink():
+        print("⚠️ Внимание: Comlink не отвечает, бот может работать некорректно")
+    
     application = Application.builder().token(TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
@@ -114,7 +137,7 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CallbackQueryHandler(show_roster, pattern="^show_roster$"))
     
-    print("🤖 Бот запущен! Comlink на localhost:3000")
+    print("🤖 Бот запущен!")
     application.run_polling()
 
 if __name__ == "__main__":
