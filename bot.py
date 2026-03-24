@@ -23,35 +23,71 @@ if not os.path.exists(DATA_FOLDER):
 
 JSON_FILE_PATH = os.path.join(DATA_FOLDER, 'guild_data.json')
 
-def download_and_save_json() -> bool:
-    """Скачивает JSON с сайта и сохраняет в файл. Возвращает True при успехе."""
+def download_and_save_json() -> tuple[bool, str]:
+    """Скачивает JSON с сайта и сохраняет в файл. Возвращает (успех, сообщение)."""
     try:
-        # Выполняем GET-запрос с заголовками User-Agent для обхода блокировки
+        # Полные заголовки браузера для обхода блокировки
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Referer': 'https://swgoh.gg/',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin',
         }
-        response = requests.get(GUILD_URL, headers=headers, timeout=10)
+        
+        logger.info(f"Пытаюсь скачать данные с {GUILD_URL}")
+        
+        # Выполняем GET-запрос
+        response = requests.get(GUILD_URL, headers=headers, timeout=15)
+        
+        logger.info(f"Статус ответа: {response.status_code}")
+        
+        # Проверяем статус ответа
+        if response.status_code == 403:
+            return False, "Сайт блокирует запрос. Возможно, потребуется добавить дополнительные заголовки или использовать прокси."
+        
         response.raise_for_status()
         
+        # Проверяем, что ответ не пустой
+        if not response.text:
+            return False, "Получен пустой ответ от сервера"
+        
         # Парсим JSON
-        guild_data = response.json()
+        try:
+            guild_data = response.json()
+        except json.JSONDecodeError as e:
+            logger.error(f"Ошибка парсинга JSON: {e}")
+            logger.debug(f"Первые 500 символов ответа: {response.text[:500]}")
+            return False, f"Ошибка парсинга JSON: {str(e)[:100]}"
         
         # Сохраняем JSON в файл (перезаписываем старый)
         with open(JSON_FILE_PATH, 'w', encoding='utf-8') as f:
             json.dump(guild_data, f, indent=2, ensure_ascii=False)
         
         logger.info(f"JSON успешно сохранен в {JSON_FILE_PATH}")
-        return True
         
+        # Получаем название гильдии для информации
+        guild_name = guild_data.get('data', {}).get('name', 'Неизвестно')
+        member_count = guild_data.get('data', {}).get('member_count', 0)
+        
+        return True, f"Гильдия: {guild_name}, участников: {member_count}"
+        
+    except requests.exceptions.Timeout:
+        logger.error("Timeout при запросе к API")
+        return False, "Таймаут при подключении к серверу. Попробуйте позже."
+    except requests.exceptions.ConnectionError:
+        logger.error("Ошибка подключения")
+        return False, "Не удалось подключиться к серверу. Проверьте интернет-соединение."
     except requests.exceptions.RequestException as e:
         logger.error(f"Ошибка при скачивании JSON: {e}")
-        return False
-    except json.JSONDecodeError as e:
-        logger.error(f"Ошибка при парсинге JSON: {e}")
-        return False
+        return False, f"Ошибка запроса: {str(e)[:100]}"
     except Exception as e:
         logger.error(f"Непредвиденная ошибка: {e}")
-        return False
+        return False, f"Непредвиденная ошибка: {str(e)[:100]}"
 
 def parse_guild_data() -> dict:
     """Парсит сохраненный JSON файл и возвращает данные для вывода."""
@@ -60,9 +96,18 @@ def parse_guild_data() -> dict:
         if not os.path.exists(JSON_FILE_PATH):
             return {'error': 'Файл с данными не найден. Используйте команду /update для загрузки данных.'}
         
+        # Проверяем размер файла
+        file_size = os.path.getsize(JSON_FILE_PATH)
+        if file_size == 0:
+            return {'error': 'Файл с данными пуст. Используйте команду /update для повторной загрузки.'}
+        
         # Читаем JSON из файла
         with open(JSON_FILE_PATH, 'r', encoding='utf-8') as f:
             guild_data = json.load(f)
+        
+        # Проверяем структуру данных
+        if 'data' not in guild_data:
+            return {'error': 'Неверная структура JSON файла'}
         
         # Извлекаем данные
         data = guild_data.get('data', {})
@@ -95,33 +140,32 @@ def parse_guild_data() -> dict:
         
     except json.JSONDecodeError as e:
         logger.error(f"Ошибка при чтении JSON файла: {e}")
-        return {'error': 'Ошибка при чтении файла данных. Попробуйте обновить данные командой /update'}
+        return {'error': f'Ошибка при чтении файла данных: {str(e)[:100]}. Попробуйте обновить данные командой /update'}
     except Exception as e:
         logger.error(f"Непредвиденная ошибка при парсинге: {e}")
-        return {'error': f'Ошибка при обработке данных: {e}'}
+        return {'error': f'Ошибка при обработке данных: {str(e)[:100]}'}
 
 async def update_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Скачивает свежие данные с сайта и сохраняет их."""
-    await update.message.reply_text("🔄 Скачиваю свежие данные с swgoh.gg...")
+    message = await update.message.reply_text("🔄 Скачиваю свежие данные с swgoh.gg...\nЭто может занять несколько секунд...")
     
-    if download_and_save_json():
-        # Получаем название гильдии для подтверждения
-        try:
-            with open(JSON_FILE_PATH, 'r', encoding='utf-8') as f:
-                guild_data = json.load(f)
-                guild_name = guild_data.get('data', {}).get('name', 'Гильдия')
-            
-            await update.message.reply_text(
-                f"✅ Данные успешно обновлены!\n"
-                f"🏰 Гильдия: {guild_name}\n"
-                f"🕒 Данные актуальны на {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-        except:
-            await update.message.reply_text("✅ Данные успешно обновлены!")
+    success, info = download_and_save_json()
+    
+    if success:
+        await message.edit_text(
+            f"✅ Данные успешно обновлены!\n"
+            f"📊 {info}\n"
+            f"🕒 Время обновления: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            f"Теперь используйте команду /guild для просмотра списка игроков"
+        )
     else:
-        await update.message.reply_text(
-            "❌ Не удалось обновить данные.\n"
-            "Проверьте подключение к интернету или попробуйте позже."
+        await message.edit_text(
+            f"❌ Не удалось обновить данные.\n"
+            f"Причина: {info}\n\n"
+            f"💡 Возможные решения:\n"
+            f"• Проверьте подключение к интернету\n"
+            f"• Попробуйте позже\n"
+            f"• Если проблема повторяется, возможно сайт изменил API"
         )
 
 async def get_guild(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -142,7 +186,7 @@ async def get_guild(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     
     # Добавляем информацию о времени последней синхронизации
-    if result.get('last_sync'):
+    if result.get('last_sync') and result['last_sync'] != 'Неизвестно':
         message_text += f"\n\n🕒 Данные от: {result['last_sync']}"
     
     # Проверяем длину сообщения (ограничение Telegram - 4096 символов)
