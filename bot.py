@@ -3,8 +3,8 @@ import json
 import logging
 import os
 from datetime import datetime
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 # Настройка логирования
 logging.basicConfig(
@@ -22,6 +22,9 @@ if not os.path.exists(DATA_FOLDER):
     os.makedirs(DATA_FOLDER)
 
 JSON_FILE_PATH = os.path.join(DATA_FOLDER, 'guild_data.json')
+PLAYERS_LIST_FILE = os.path.join(DATA_FOLDER, 'players_list.txt')
+ADMINS_FILE = os.path.join(DATA_FOLDER, 'admins.json')
+NICKNAMES_FILE = os.path.join(DATA_FOLDER, 'nicknames.json')
 
 # Заголовки из вашего браузера (адаптированные для swgoh.gg)
 REQUEST_HEADERS = {
@@ -42,20 +45,125 @@ REQUEST_HEADERS = {
     "Origin": "https://swgoh.gg"
 }
 
+# Загрузка и сохранение данных
+def load_json_file(file_path, default=None):
+    """Загружает JSON из файла"""
+    if not os.path.exists(file_path):
+        return default if default is not None else {}
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        return default if default is not None else {}
+
+def save_json_file(file_path, data):
+    """Сохраняет JSON в файл"""
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+def is_admin(user_id):
+    """Проверяет, является ли пользователь админом"""
+    admins = load_json_file(ADMINS_FILE, [])
+    return user_id in admins
+
+def add_admin(user_id):
+    """Добавляет админа"""
+    admins = load_json_file(ADMINS_FILE, [])
+    if user_id not in admins:
+        admins.append(user_id)
+        save_json_file(ADMINS_FILE, admins)
+        return True
+    return False
+
+def remove_admin(user_id):
+    """Удаляет админа"""
+    admins = load_json_file(ADMINS_FILE, [])
+    if user_id in admins:
+        admins.remove(user_id)
+        save_json_file(ADMINS_FILE, admins)
+        return True
+    return False
+
+def add_nickname(player_name, telegram_username):
+    """Добавляет привязку ника игрока к Telegram username"""
+    nicknames = load_json_file(NICKNAMES_FILE, {})
+    nicknames[player_name] = telegram_username
+    save_json_file(NICKNAMES_FILE, nicknames)
+
+def remove_nickname(player_name):
+    """Удаляет привязку ника игрока"""
+    nicknames = load_json_file(NICKNAMES_FILE, {})
+    if player_name in nicknames:
+        del nicknames[player_name]
+        save_json_file(NICKNAMES_FILE, nicknames)
+        return True
+    return False
+
+def get_nickname(player_name):
+    """Получает Telegram username для игрока"""
+    nicknames = load_json_file(NICKNAMES_FILE, {})
+    return nicknames.get(player_name)
+
+def format_guild_list():
+    """Форматирует список игроков с привязками к Telegram"""
+    result = parse_guild_data()
+    
+    if 'error' in result:
+        return result['error']
+    
+    guild_name = result['guild_name']
+    member_count = result['member_count']
+    players = result['players_raw']
+    
+    # Разделяем игроков на привязанных и непривязанных
+    linked_players = []
+    unlinked_players = []
+    
+    for player in players:
+        player_name = player['player_name']
+        telegram_username = get_nickname(player_name)
+        gp = player['galactic_power']
+        
+        if telegram_username:
+            # Убираем @ если он есть
+            if telegram_username.startswith('@'):
+                telegram_username = telegram_username[1:]
+            linked_players.append((player_name, telegram_username, gp))
+        else:
+            unlinked_players.append((player_name, gp))
+    
+    # Формируем сообщение
+    message_lines = [f"🏰 *{guild_name}*", f"👥 Игроков {member_count}/50:\n"]
+    
+    if linked_players:
+        message_lines.append("*Привязанные воины:*")
+        for i, (name, tg_name, gp) in enumerate(linked_players, 1):
+            formatted_gp = f"{gp:,}".replace(',', ' ')
+            message_lines.append(f"{i}. {name} - @{tg_name} (GP: {formatted_gp})")
+        message_lines.append("")
+    
+    if unlinked_players:
+        message_lines.append("*Неизвестные воины:*")
+        for i, (name, gp) in enumerate(unlinked_players, 1):
+            formatted_gp = f"{gp:,}".replace(',', ' ')
+            message_lines.append(f"{i}. {name} (GP: {formatted_gp})")
+    
+    if result.get('last_sync') and result['last_sync'] != 'Неизвестно':
+        message_lines.append(f"\n🕒 Данные от: {result['last_sync']}")
+    
+    return "\n".join(message_lines)
+
 def download_and_save_json() -> tuple[bool, str]:
     """Скачивает JSON с сайта используя заголовки браузера."""
     try:
         logger.info(f"Пытаюсь скачать данные с {GUILD_URL}")
         
-        # Создаем сессию для сохранения куки
         session = requests.Session()
         
-        # Сначала заходим на главную страницу, чтобы получить куки
         logger.info("Заходим на главную страницу для получения куки...")
         main_response = session.get('https://swgoh.gg/', headers=REQUEST_HEADERS, timeout=10)
         logger.info(f"Главная страница: статус {main_response.status_code}")
         
-        # Теперь запрашиваем API
         logger.info("Запрашиваем API...")
         response = session.get(GUILD_URL, headers=REQUEST_HEADERS, timeout=15)
         
@@ -69,25 +177,20 @@ def download_and_save_json() -> tuple[bool, str]:
         
         response.raise_for_status()
         
-        # Проверяем, что ответ не пустой
         if not response.text:
             return False, "Получен пустой ответ от сервера"
         
-        # Пробуем распарсить JSON
         try:
             guild_data = response.json()
         except json.JSONDecodeError as e:
             logger.error(f"Ошибка парсинга JSON: {e}")
-            logger.debug(f"Первые 500 символов ответа: {response.text[:500]}")
             return False, f"Сервер вернул не JSON. Первые 100 символов: {response.text[:100]}"
         
-        # Сохраняем JSON
         with open(JSON_FILE_PATH, 'w', encoding='utf-8') as f:
             json.dump(guild_data, f, indent=2, ensure_ascii=False)
         
         logger.info(f"JSON успешно сохранен в {JSON_FILE_PATH}")
         
-        # Получаем информацию о гильдии
         guild_name = guild_data.get('data', {}).get('name', 'Неизвестно')
         member_count = guild_data.get('data', {}).get('member_count', 0)
         
@@ -129,19 +232,11 @@ def parse_guild_data() -> dict:
         # Сортируем игроков по ГМ (мощности) по убыванию
         sorted_members = sorted(members, key=lambda x: x.get('galactic_power', 0), reverse=True)
         
-        # Формируем список игроков
-        players_list = []
-        for i, member in enumerate(sorted_members, 1):
-            player_name = member.get('player_name', 'Неизвестно')
-            galactic_power = member.get('galactic_power', 0)
-            formatted_gp = f"{galactic_power:,}".replace(',', ' ')
-            players_list.append(f"{i}. {player_name} (GP: {formatted_gp})")
-        
         return {
             'success': True,
             'guild_name': guild_name,
             'member_count': member_count,
-            'players_list': players_list,
+            'players_raw': sorted_members,
             'last_sync': data.get('last_sync', 'Неизвестно')
         }
         
@@ -152,8 +247,45 @@ def parse_guild_data() -> dict:
         logger.error(f"Непредвиденная ошибка при парсинге: {e}")
         return {'error': f'Ошибка при обработке данных: {str(e)[:100]}'}
 
+# Команды бота
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "👋 Привет! Я бот для получения данных гильдии из SWGOH.gg\n\n"
+        "📋 *Доступные команды:*\n"
+        "/update - Скачать свежие данные с swgoh.gg\n"
+        "/guild - Показать список игроков гильдии\n"
+        "/guild_full - Получить полные данные (JSON-файл)\n"
+        "/add [ник] - @username - Привязать Telegram к игроку\n"
+        "/remove [ник] - Удалить привязку Telegram\n"
+        "/admins - Показать список админов\n"
+        "/help - Показать это сообщение\n\n"
+        "💡 *Важно:* Сначала используйте /update для загрузки данных!",
+        parse_mode='Markdown'
+    )
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "📋 *Доступные команды:*\n\n"
+        "/start - Приветственное сообщение\n"
+        "/update - Скачать свежие данные с swgoh.gg\n"
+        "/guild - Показать список игроков гильдии\n"
+        "/guild_full - Получить полные данные (JSON-файл)\n"
+        "/add [ник] - @username - Привязать Telegram к игроку\n"
+        "/remove [ник] - Удалить привязку Telegram\n"
+        "/admins - Показать список админов\n"
+        "/help - Показать это сообщение\n\n"
+        "📝 *Примеры:*\n"
+        "/add Qbik - @KuBiK90\n"
+        "/remove Qbik",
+        parse_mode='Markdown'
+    )
+
 async def update_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Скачивает свежие данные с сайта и сохраняет их."""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+        return
+    
     message = await update.message.reply_text("🔄 Скачиваю свежие данные с swgoh.gg...\nЭто может занять несколько секунд...")
     
     success, info = download_and_save_json()
@@ -175,30 +307,21 @@ async def update_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def get_guild(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Парсит сохраненный JSON и выводит список игроков."""
-    result = parse_guild_data()
+    message_text = format_guild_list()
     
-    if 'error' in result:
-        await update.message.reply_text(f"❌ {result['error']}")
+    if message_text.startswith("❌"):
+        await update.message.reply_text(message_text)
         return
     
-    message_text = (
-        f"🏰 *{result['guild_name']}*\n"
-        f"👥 Игроков {result['member_count']}/50:\n\n"
-        f"{chr(10).join(result['players_list'])}"
-    )
-    
-    if result.get('last_sync') and result['last_sync'] != 'Неизвестно':
-        message_text += f"\n\n🕒 Данные от: {result['last_sync']}"
+    # Сохраняем список в файл
+    with open(PLAYERS_LIST_FILE, 'w', encoding='utf-8') as f:
+        f.write(message_text)
     
     if len(message_text) > 4096:
-        players_file = os.path.join(DATA_FOLDER, 'players_list.txt')
-        with open(players_file, 'w', encoding='utf-8') as f:
-            f.write(message_text)
-        
         await update.message.reply_document(
-            document=open(players_file, 'rb'),
+            document=open(PLAYERS_LIST_FILE, 'rb'),
             filename='guild_players.txt',
-            caption=f"📊 Список игроков гильдии {result['guild_name']}"
+            caption="📊 Список игроков гильдии"
         )
     else:
         await update.message.reply_text(message_text, parse_mode='Markdown')
@@ -207,6 +330,10 @@ async def get_guild(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def get_guild_full(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Отправляет сохраненный JSON файл."""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+        return
+    
     if not os.path.exists(JSON_FILE_PATH):
         await update.message.reply_text(
             "❌ Файл с данными не найден.\n"
@@ -228,39 +355,232 @@ async def get_guild_full(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка при отправке файла: {e}")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def add_nickname_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Добавляет привязку Telegram к игроку"""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+        return
+    
+    # Получаем аргументы команды
+    args = context.args
+    if len(args) < 3 or args[1] != '-':
+        await update.message.reply_text(
+            "❌ Неправильный формат команды.\n"
+            "Используйте: /add [ник игрока] - @username\n"
+            "Пример: /add Qbik - @KuBiK90"
+        )
+        return
+    
+    player_name = args[0]
+    telegram_username = args[2]
+    
+    # Убираем @ если он есть
+    if telegram_username.startswith('@'):
+        telegram_username = telegram_username[1:]
+    
+    # Проверяем, существует ли игрок в гильдии
+    result = parse_guild_data()
+    if 'error' in result:
+        await update.message.reply_text(f"❌ {result['error']}")
+        return
+    
+    players = result['players_raw']
+    player_exists = any(p['player_name'] == player_name for p in players)
+    
+    if not player_exists:
+        await update.message.reply_text(f"❌ Такого воина нет в гильдии: {player_name}")
+        return
+    
+    # Добавляем привязку
+    add_nickname(player_name, telegram_username)
+    
+    # Форматируем GP игрока
+    player_gp = next(p['galactic_power'] for p in players if p['player_name'] == player_name)
+    formatted_gp = f"{player_gp:,}".replace(',', ' ')
+    
     await update.message.reply_text(
-        "👋 Привет! Я бот для получения данных гильдии из SWGOH.gg\n\n"
-        "📋 *Доступные команды:*\n"
-        "/update - Скачать свежие данные с swgoh.gg\n"
-        "/guild - Показать список игроков гильдии\n"
-        "/guild_full - Получить полные данные (JSON-файл)\n"
-        "/help - Показать это сообщение\n\n"
-        "💡 *Важно:* Сначала используйте /update для загрузки данных!",
-        parse_mode='Markdown'
+        f"✅ Игрок {player_name} (GP: {formatted_gp}) привязан к @{telegram_username}\n\n"
+        f"Теперь в списке гильдии он будет отображаться как:\n"
+        f"{player_name} - @{telegram_username} (GP: {formatted_gp})"
     )
+    
+    logger.info(f"Админ {update.effective_user.id} добавил привязку {player_name} -> @{telegram_username}")
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def remove_nickname_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Удаляет привязку Telegram к игроку"""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажите имя игрока.\n"
+            "Пример: /remove Qbik"
+        )
+        return
+    
+    player_name = context.args[0]
+    
+    # Проверяем, есть ли привязка
+    current_nickname = get_nickname(player_name)
+    if not current_nickname:
+        await update.message.reply_text(f"❌ У игрока {player_name} нет привязки к Telegram")
+        return
+    
+    # Удаляем привязку
+    remove_nickname(player_name)
+    
     await update.message.reply_text(
-        "📋 *Доступные команды:*\n\n"
-        "/start - Приветственное сообщение\n"
-        "/update - Скачать свежие данные с swgoh.gg\n"
-        "/guild - Показать список игроков гильдии\n"
-        "/guild_full - Получить полные данные (JSON-файл)\n"
-        "/help - Показать это сообщение",
+        f"✅ Привязка игрока {player_name} к @{current_nickname} удалена.\n"
+        f"Теперь он будет отображаться в списке 'Неизвестные воины'"
+    )
+    
+    logger.info(f"Админ {update.effective_user.id} удалил привязку {player_name}")
+
+async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает список админов"""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+        return
+    
+    admins = load_json_file(ADMINS_FILE, [])
+    
+    if not admins:
+        await update.message.reply_text("📋 Список админов пуст.")
+        return
+    
+    # Получаем информацию о пользователях
+    admin_list = []
+    for admin_id in admins:
+        try:
+            user = await context.bot.get_chat(admin_id)
+            admin_list.append(f"• {user.first_name} (@{user.username}) - `{admin_id}`")
+        except:
+            admin_list.append(f"• Пользователь {admin_id}")
+    
+    message_text = "👥 *Админы бота:*\n\n" + "\n".join(admin_list)
+    
+    # Добавляем кнопку для добавления админа (только для главного админа)
+    keyboard = []
+    if update.effective_user.id == 785121984:  # ID @KuBiK90
+        keyboard.append([InlineKeyboardButton("➕ Добавить админа", callback_data="add_admin")])
+        keyboard.append([InlineKeyboardButton("➖ Удалить админа", callback_data="remove_admin")])
+    
+    if keyboard:
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(message_text, parse_mode='Markdown', reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(message_text, parse_mode='Markdown')
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработка нажатий на кнопки"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Проверяем, что пользователь - главный админ
+    if update.effective_user.id != 785121984:  # ID @KuBiK90
+        await query.edit_message_text("❌ Только главный админ может управлять админами.")
+        return
+    
+    if query.data == "add_admin":
+        await query.edit_message_text(
+            "✏️ Введите ID пользователя, которого хотите сделать админом.\n"
+            "Формат: /add_admin [ID]\n"
+            "Пример: /add_admin 123456789\n\n"
+            "ID пользователя можно узнать у него командой /id"
+        )
+    elif query.data == "remove_admin":
+        await query.edit_message_text(
+            "✏️ Введите ID пользователя, которого хотите удалить из админов.\n"
+            "Формат: /remove_admin [ID]\n"
+            "Пример: /remove_admin 123456789"
+        )
+
+async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Добавляет админа (только для главного админа)"""
+    if update.effective_user.id != 785121984:  # ID @KuBiK90
+        await update.message.reply_text("❌ Только главный админ может добавлять админов.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("❌ Укажите ID пользователя.\nПример: /add_admin 123456789")
+        return
+    
+    try:
+        user_id = int(context.args[0])
+        
+        if add_admin(user_id):
+            await update.message.reply_text(f"✅ Пользователь {user_id} добавлен в админы.")
+            logger.info(f"Главный админ добавил админа {user_id}")
+        else:
+            await update.message.reply_text(f"❌ Пользователь {user_id} уже является админом.")
+    except ValueError:
+        await update.message.reply_text("❌ Неверный формат ID. ID должен быть числом.")
+
+async def remove_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Удаляет админа (только для главного админа)"""
+    if update.effective_user.id != 785121984:  # ID @KuBiK90
+        await update.message.reply_text("❌ Только главный админ может удалять админов.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("❌ Укажите ID пользователя.\nПример: /remove_admin 123456789")
+        return
+    
+    try:
+        user_id = int(context.args[0])
+        
+        if user_id == 785121984:
+            await update.message.reply_text("❌ Нельзя удалить главного админа.")
+            return
+        
+        if remove_admin(user_id):
+            await update.message.reply_text(f"✅ Пользователь {user_id} удален из админов.")
+            logger.info(f"Главный админ удалил админа {user_id}")
+        else:
+            await update.message.reply_text(f"❌ Пользователь {user_id} не является админом.")
+    except ValueError:
+        await update.message.reply_text("❌ Неверный формат ID. ID должен быть числом.")
+
+async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает ID пользователя"""
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "нет username"
+    first_name = update.effective_user.first_name or ""
+    
+    await update.message.reply_text(
+        f"📋 *Ваши данные:*\n"
+        f"ID: `{user_id}`\n"
+        f"Имя: {first_name}\n"
+        f"Username: @{username}\n\n"
+        f"Эти данные нужны для добавления в админы бота.",
         parse_mode='Markdown'
     )
 
 def main() -> None:
     TOKEN = "8295503667:AAEHfdeLyL158BE1qcRTLCpp0ya5BbzSFe4"
     
+    # Инициализируем данные
+    if not os.path.exists(ADMINS_FILE):
+        save_json_file(ADMINS_FILE, [785121984])  # Добавляем @KuBiK90 как главного админа
+    
     application = Application.builder().token(TOKEN).build()
     
+    # Команды
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("update", update_data))
     application.add_handler(CommandHandler("guild", get_guild))
     application.add_handler(CommandHandler("guild_full", get_guild_full))
-    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("add", add_nickname_command))
+    application.add_handler(CommandHandler("remove", remove_nickname_command))
+    application.add_handler(CommandHandler("admins", admins_command))
+    application.add_handler(CommandHandler("add_admin", add_admin_command))
+    application.add_handler(CommandHandler("remove_admin", remove_admin_command))
+    application.add_handler(CommandHandler("id", get_id))
+    
+    # Обработчик кнопок
+    application.add_handler(CallbackQueryHandler(button_callback))
     
     logger.info("Бот запущен и готов к работе")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
