@@ -238,7 +238,7 @@ def parse_guild_data() -> dict:
         return {'error': f'Ошибка при обработке данных: {str(e)[:100]}'}
 
 def format_guild_list():
-    """Форматирует список игроков с привязками к Telegram"""
+    """Форматирует список игроков с привязками к Telegram с продолжением нумерации"""
     result = parse_guild_data()
     
     if 'error' in result:
@@ -262,11 +262,11 @@ def format_guild_list():
         else:
             unlinked_players.append((player_name, gp))
     
-    # Формируем сообщение
+    # Формируем сообщение с продолжением нумерации
     message_lines = [f"🏰 *{escape_markdown(guild_name)}*", f"👥 Игроков {member_count}/50:\n"]
     
     if linked_players:
-        message_lines.append("*Привязанные воины:*")
+        message_lines.append("*Воины Мандалора:*")
         for i, (name, tg_name, gp) in enumerate(linked_players, 1):
             formatted_gp = f"{gp:,}".replace(',', ' ')
             escaped_name = escape_markdown(name)
@@ -276,7 +276,9 @@ def format_guild_list():
     
     if unlinked_players:
         message_lines.append("*Неизвестные воины:*")
-        for i, (name, gp) in enumerate(unlinked_players, 1):
+        # Нумерация продолжается с того места, где закончились привязанные игроки
+        start_number = len(linked_players) + 1
+        for i, (name, gp) in enumerate(unlinked_players, start_number):
             formatted_gp = f"{gp:,}".replace(',', ' ')
             escaped_name = escape_markdown(name)
             message_lines.append(f"{i}. {escaped_name} (GP: {formatted_gp})")
@@ -294,11 +296,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/update - Скачать свежие данные с swgoh.gg\n"
         "/guild - Показать список игроков гильдии\n"
         "/guild_full - Получить полные данные (JSON-файл)\n"
-        "/add [ник] - @username - Привязать Telegram к игроку\n"
-        "/remove [ник] - Удалить привязку Telegram\n"
+        "/add ник игрока - @username - Привязать Telegram к игроку\n"
+        "/remove ник игрока - Удалить привязку Telegram\n"
         "/admins - Показать список админов\n"
         "/help - Показать это сообщение\n\n"
-        "💡 *Важно:* Сначала используйте /update для загрузки данных!",
+        "📝 *Примеры:*\n"
+        "/add Qbik - @KuBiK90\n"
+        "/add Just Alex - @Alexey_B_B\n"
+        "/remove Qbik\n"
+        "/remove Just Alex\n\n"
+        "💡 *Важно:* Имена с пробелами пишите без кавычек, просто через пробел.\n\n"
+        "💡 *Совет:* Сначала используйте /update для загрузки данных!",
         parse_mode='Markdown'
     )
 
@@ -309,13 +317,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/update - Скачать свежие данные с swgoh.gg\n"
         "/guild - Показать список игроков гильдии\n"
         "/guild_full - Получить полные данные (JSON-файл)\n"
-        "/add [ник] - @username - Привязать Telegram к игроку\n"
-        "/remove [ник] - Удалить привязку Telegram\n"
+        "/add ник игрока - @username - Привязать Telegram к игроку\n"
+        "/remove ник игрока - Удалить привязку Telegram\n"
         "/admins - Показать список админов\n"
         "/help - Показать это сообщение\n\n"
         "📝 *Примеры:*\n"
         "/add Qbik - @KuBiK90\n"
-        "/remove Qbik\n\n"
+        "/add Just Alex - @Alexey_B_B\n"
+        "/remove Qbik\n"
+        "/remove Just Alex\n\n"
+        "💡 *Важно:* Имена с пробелами пишите без кавычек, просто через пробел.\n\n"
         "👑 *Админы:* Управляются по username. Главный админ - @KuBiK90",
         parse_mode='Markdown'
     )
@@ -398,24 +409,55 @@ async def get_guild_full(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(f"❌ Ошибка при отправке файла: {e}")
 
 async def add_nickname_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Добавляет привязку Telegram к игроку"""
+    """Добавляет привязку Telegram к игроку (поддерживает имена с пробелами без кавычек)"""
     username = update.effective_user.username
     if not username or not is_admin(username):
         await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
         return
     
-    # Получаем аргументы команды
-    args = context.args
-    if len(args) < 3 or args[1] != '-':
+    # Получаем полный текст команды
+    full_text = update.message.text
+    
+    # Убираем команду "/add "
+    if full_text.startswith('/add '):
+        full_text = full_text[5:]
+    
+    # Ищем разделитель " - "
+    separator = ' - '
+    if separator not in full_text:
         await update.message.reply_text(
             "❌ Неправильный формат команды.\n"
-            "Используйте: /add [ник игрока] - @username\n"
-            "Пример: /add Qbik - @KuBiK90"
+            "Используйте: /add ник игрока - @username\n"
+            "Пример: /add Just Alex - @Alexey_B_B"
         )
         return
     
-    player_name = args[0]
-    telegram_username = args[2]
+    # Разделяем на имя и username
+    parts = full_text.split(separator, 1)
+    if len(parts) != 2:
+        await update.message.reply_text(
+            "❌ Неправильный формат команды.\n"
+            "Используйте: /add ник игрока - @username\n"
+            "Пример: /add Just Alex - @Alexey_B_B"
+        )
+        return
+    
+    player_name = parts[0].strip()
+    telegram_username = parts[1].strip()
+    
+    # Очищаем username от @
+    if telegram_username.startswith('@'):
+        telegram_username = telegram_username[1:]
+    
+    # Проверяем, что имя игрока не пустое
+    if not player_name:
+        await update.message.reply_text("❌ Укажите имя игрока.")
+        return
+    
+    # Проверяем, что username не пустой
+    if not telegram_username:
+        await update.message.reply_text("❌ Укажите Telegram username.")
+        return
     
     # Проверяем, существует ли игрок в гильдии
     result = parse_guild_data()
@@ -427,7 +469,17 @@ async def add_nickname_command(update: Update, context: ContextTypes.DEFAULT_TYP
     player_exists = any(p['player_name'] == player_name for p in players)
     
     if not player_exists:
-        await update.message.reply_text(f"❌ Такого воина нет в гильдии: {player_name}")
+        # Показываем похожие имена для подсказки
+        similar_names = [p['player_name'] for p in players if player_name.lower() in p['player_name'].lower()][:5]
+        if similar_names:
+            hint = "\n\n💡 Возможно, вы имели в виду:\n" + "\n".join([f"• {name}" for name in similar_names])
+        else:
+            hint = ""
+        
+        await update.message.reply_text(
+            f"❌ Такого воина нет в гильдии: {player_name}{hint}\n\n"
+            f"Используйте команду /guild для просмотра списка всех игроков."
+        )
         return
     
     # Добавляем привязку
@@ -438,44 +490,63 @@ async def add_nickname_command(update: Update, context: ContextTypes.DEFAULT_TYP
     formatted_gp = f"{player_gp:,}".replace(',', ' ')
     
     await update.message.reply_text(
-        f"✅ Игрок {player_name} (GP: {formatted_gp}) привязан к {telegram_username}\n\n"
+        f"✅ Игрок \"{player_name}\" (GP: {formatted_gp}) привязан к @{telegram_username}\n\n"
         f"Теперь в списке гильдии он будет отображаться как:\n"
-        f"{player_name} - {telegram_username} (GP: {formatted_gp})"
+        f"{player_name} - @{telegram_username} (GP: {formatted_gp})"
     )
     
-    logger.info(f"Админ @{username} добавил привязку {player_name} -> {telegram_username}")
+    logger.info(f"Админ @{username} добавил привязку \"{player_name}\" -> @{telegram_username}")
 
 async def remove_nickname_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Удаляет привязку Telegram к игроку"""
+    """Удаляет привязку Telegram к игроку (поддерживает имена с пробелами)"""
     username = update.effective_user.username
     if not username or not is_admin(username):
         await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
         return
     
-    if not context.args:
+    # Получаем полный текст команды
+    full_text = update.message.text
+    
+    # Убираем команду "/remove "
+    if full_text.startswith('/remove '):
+        player_name = full_text[8:].strip()
+    else:
+        player_name = ' '.join(context.args) if context.args else ''
+    
+    if not player_name:
         await update.message.reply_text(
             "❌ Укажите имя игрока.\n"
-            "Пример: /remove Qbik"
+            "Пример: /remove Just Alex"
         )
         return
-    
-    player_name = context.args[0]
     
     # Проверяем, есть ли привязка
     current_nickname = get_nickname(player_name)
     if not current_nickname:
-        await update.message.reply_text(f"❌ У игрока {player_name} нет привязки к Telegram")
+        # Показываем похожие имена для подсказки
+        all_nicknames = load_json_file(NICKNAMES_FILE, {})
+        similar_names = [name for name in all_nicknames.keys() if player_name.lower() in name.lower()][:5]
+        
+        if similar_names:
+            hint = "\n\n💡 Возможно, вы имели в виду:\n" + "\n".join([f"• {name}" for name in similar_names])
+        else:
+            hint = ""
+        
+        await update.message.reply_text(
+            f"❌ У игрока \"{player_name}\" нет привязки к Telegram.{hint}\n\n"
+            f"Используйте команду /guild для просмотра списка всех игроков и их привязок."
+        )
         return
     
     # Удаляем привязку
     remove_nickname(player_name)
     
     await update.message.reply_text(
-        f"✅ Привязка игрока {player_name} к @{current_nickname} удалена.\n"
+        f"✅ Привязка игрока \"{player_name}\" к @{current_nickname} удалена.\n"
         f"Теперь он будет отображаться в списке 'Неизвестные воины'"
     )
     
-    logger.info(f"Админ @{username} удалил привязку {player_name}")
+    logger.info(f"Админ @{username} удалил привязку \"{player_name}\"")
 
 async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает список админов (без Markdown, чтобы символы отображались корректно)"""
