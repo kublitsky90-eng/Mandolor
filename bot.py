@@ -252,8 +252,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 def main() -> None:
-    # ВАЖНО: замените на ваш новый токен после отзыва старого!
-    TOKEN = "ВАШ_НОВЫЙ_ТОКЕН_ЗДЕСЬ"
+    TOKEN = "8295503667:AAEHfdeLyL158BE1qcRTLCpp0ya5BbzSFe4"
     
     application = Application.builder().token(TOKEN).build()
     
