@@ -61,39 +61,51 @@ def save_json_file(file_path, data):
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-# ========== Функции для работы с админами (по username) ==========
+# ========== Функции для работы с админами (по username, без приведения к регистру) ==========
+def normalize_username(username):
+    """Убирает @ в начале, если есть, но сохраняет регистр"""
+    if not username:
+        return None
+    if username.startswith('@'):
+        username = username[1:]
+    return username
+
 def is_admin(username):
-    """Проверяет, является ли пользователь админом по username"""
+    """Проверяет, является ли пользователь админом по username (точное сравнение)"""
     if not username:
         return False
     
-    # Убираем @ если есть
-    if username.startswith('@'):
-        username = username[1:]
+    normalized_username = normalize_username(username)
+    if not normalized_username:
+        return False
     
     admins = load_json_file(ADMINS_FILE, [])
-    return username in admins
+    # Точное сравнение с сохранением регистра
+    return normalized_username in admins
 
 def add_admin(username):
-    """Добавляет админа по username"""
-    if username.startswith('@'):
-        username = username[1:]
+    """Добавляет админа по username (сохраняет исходный регистр)"""
+    normalized_username = normalize_username(username)
+    if not normalized_username:
+        return False
     
     admins = load_json_file(ADMINS_FILE, [])
-    if username not in admins:
-        admins.append(username)
+    # Точное сравнение с сохранением регистра
+    if normalized_username not in admins:
+        admins.append(normalized_username)
         save_json_file(ADMINS_FILE, admins)
         return True
     return False
 
 def remove_admin(username):
-    """Удаляет админа по username"""
-    if username.startswith('@'):
-        username = username[1:]
+    """Удаляет админа по username (точное сравнение)"""
+    normalized_username = normalize_username(username)
+    if not normalized_username:
+        return False
     
     admins = load_json_file(ADMINS_FILE, [])
-    if username in admins:
-        admins.remove(username)
+    if normalized_username in admins:
+        admins.remove(normalized_username)
         save_json_file(ADMINS_FILE, admins)
         return True
     return False
@@ -467,6 +479,7 @@ async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("📋 Список админов пуст.")
         return
     
+    # Формируем список админов
     admin_list = [f"• @{admin}" for admin in admins]
     message_text = "👥 *Админы бота:*\n\n" + "\n".join(admin_list)
     
@@ -493,17 +506,27 @@ async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text(
             "❌ Укажите username пользователя.\n"
             "Пример: /add_admin @username\n"
-            "или /add_admin username"
+            "или /add_admin username\n\n"
+            "Username может содержать буквы, цифры и символы подчеркивания."
         )
         return
     
     new_admin = context.args[0]
+    if new_admin.startswith('@'):
+        new_admin = new_admin[1:]
     
     if add_admin(new_admin):
-        await update.message.reply_text(f"✅ Пользователь {new_admin} добавлен в админы.")
-        logger.info(f"Главный админ добавил админа {new_admin}")
+        await update.message.reply_text(
+            f"✅ Пользователь @{new_admin} добавлен в админы.\n\n"
+            f"Теперь он может использовать команды:\n"
+            f"• /update - обновлять данные\n"
+            f"• /add - привязывать игроков\n"
+            f"• /remove - удалять привязки\n"
+            f"• /guild_full - получать JSON файл"
+        )
+        logger.info(f"Главный админ @{username} добавил админа @{new_admin}")
     else:
-        await update.message.reply_text(f"❌ Пользователь {new_admin} уже является админом.")
+        await update.message.reply_text(f"❌ Пользователь @{new_admin} уже является админом.")
 
 async def remove_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Удаляет админа по username (только для главного админа)"""
@@ -530,7 +553,7 @@ async def remove_admin_command(update: Update, context: ContextTypes.DEFAULT_TYP
     
     if remove_admin(admin_to_remove):
         await update.message.reply_text(f"✅ Пользователь @{admin_to_remove} удален из админов.")
-        logger.info(f"Главный админ удалил админа @{admin_to_remove}")
+        logger.info(f"Главный админ @{username} удалил админа @{admin_to_remove}")
     else:
         await update.message.reply_text(f"❌ Пользователь @{admin_to_remove} не является админом.")
 
@@ -549,14 +572,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(
             "✏️ Введите username пользователя, которого хотите сделать админом.\n"
             "Формат: /add_admin @username\n"
-            "Пример: /add_admin @username\n\n"
+            "Пример: /add_admin @Alexey_B_B\n\n"
             "Используйте команду прямо в чате."
         )
     elif query.data == "remove_admin":
         await query.edit_message_text(
             "✏️ Введите username пользователя, которого хотите удалить из админов.\n"
             "Формат: /remove_admin @username\n"
-            "Пример: /remove_admin @username\n\n"
+            "Пример: /remove_admin @Alexey_B_B\n\n"
             "Используйте команду прямо в чате."
         )
 
@@ -565,7 +588,7 @@ def main() -> None:
     # ВАЖНО: замените на ваш новый токен после отзыва старого!
     TOKEN = "8295503667:AAEHfdeLyL158BE1qcRTLCpp0ya5BbzSFe4"
     
-    # Инициализируем данные с главным админом по username
+    # Инициализируем данные с главным админом
     if not os.path.exists(ADMINS_FILE):
         save_json_file(ADMINS_FILE, ["KuBiK90"])
         logger.info("Создан файл админов с главным админом @KuBiK90")
