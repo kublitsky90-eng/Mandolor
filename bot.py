@@ -1,65 +1,69 @@
-import os
 import requests
+from bs4 import BeautifulSoup
 import asyncio
-import time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 TOKEN = "8295503667:AAEHfdeLyL158BE1qcRTLCpp0ya5BbzSFe4"
-COMLINK_URL = "http://localhost:3000"
-GUILD_ID = "j16DZ27ZQWe7UqWJP90zjg"
-
-def wait_for_comlink(max_retries=30, delay=2):
-    """Ожидает запуска Comlink, делает до 30 попыток с интервалом 2 секунды"""
-    print("⏳ Ожидание запуска Comlink...")
-    for i in range(max_retries):
-        try:
-            response = requests.get(f"{COMLINK_URL}/", timeout=2)
-            if response.status_code == 200:
-                print("✅ Comlink готов к работе!")
-                return True
-        except:
-            pass
-        print(f"   Попытка {i+1}/{max_retries}...")
-        time.sleep(delay)
-    print("❌ Comlink не запустился вовремя")
-    return False
+# Используем обычную страницу гильдии, а не API
+GUILD_URL = "https://swgoh.gg/g/j16DZ27ZQWe7UqWJP90zjg/"
 
 async def get_guild_roster():
-    """Получает список участников через Comlink"""
+    """Парсит список участников с HTML страницы гильдии"""
     try:
-        payload = {
-            "payload": {
-                "guildId": GUILD_ID,
-                "includeRecentGuildActivityInfo": False
-            }
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml',
+            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
         }
         
-        response = requests.post(
-            f"{COMLINK_URL}/guild",
-            json=payload,
-            timeout=15
-        )
+        response = requests.get(GUILD_URL, headers=headers, timeout=15)
         
         if response.status_code != 200:
-            return f"⚠️ Ошибка Comlink: {response.status_code}", 0
+            return f"⚠️ Ошибка загрузки: {response.status_code}", 0
         
-        data = response.json()
-        members = data.get("member", [])
-        profile = data.get("profile", {})
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Ищем название гильдии
+        guild_name_tag = soup.find('h1', class_='guild-name')
+        guild_name = guild_name_tag.text.strip() if guild_name_tag else "Mandalorians Kryze"
+        
+        # Ищем таблицу с участниками
+        # На swgoh.gg участники обычно в таблице с классом "table"
+        table = soup.find('table', class_='table')
+        
+        if not table:
+            # Пробуем найти другой селектор
+            table = soup.find('table')
+        
+        if not table:
+            return "⚠️ Не удалось найти таблицу с участниками", 0
+        
+        # Парсим строки таблицы
+        rows = table.find_all('tr')
+        members = []
+        
+        for row in rows[1:]:  # Пропускаем заголовок
+            cells = row.find_all('td')
+            if len(cells) >= 2:
+                # Имя обычно в первой или второй колонке
+                name_cell = cells[0] if cells else None
+                if name_cell:
+                    name_tag = name_cell.find('a')
+                    if name_tag:
+                        player_name = name_tag.text.strip()
+                        if player_name:
+                            members.append(player_name)
         
         if not members:
-            return "⚠️ В гильдии нет участников", 0
-            
+            return "⚠️ Не удалось найти участников", 0
+        
         member_count = len(members)
-        guild_name = profile.get("name", "Mandalorians Kryze")
         
-        sorted_members = sorted(members, key=lambda x: x.get("playerName", ""))
-        
+        # Формируем список
         roster_lines = []
-        for idx, member in enumerate(sorted_members, start=1):
-            player_name = member.get("playerName", "Неизвестно")
-            roster_lines.append(f"{idx}. {player_name}")
+        for idx, name in enumerate(sorted(members), start=1):
+            roster_lines.append(f"{idx}. {name}")
         
         members_list = "\n".join(roster_lines)
         formatted_message = (
@@ -72,9 +76,9 @@ async def get_guild_roster():
         
     except Exception as e:
         print(f"Ошибка: {e}")
-        return f"⚠️ Ошибка подключения к Comlink. Подробности: {e}", 0
+        return f"⚠️ Ошибка загрузки: {str(e)[:100]}", 0
 
-# --- Обработчики команд ---
+# --- Обработчики команд (без изменений) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("📋 Показать состав гильдии", callback_data="show_roster")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -126,10 +130,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
 def main():
-    # Ждем запуска Comlink перед стартом бота
-    if not wait_for_comlink():
-        print("⚠️ Внимание: Comlink не отвечает, бот может работать некорректно")
-    
     application = Application.builder().token(TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
