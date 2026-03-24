@@ -61,7 +61,7 @@ def save_json_file(file_path, data):
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-# ========== Функции для работы с админами (по username, без приведения к регистру) ==========
+# ========== Функции для работы с админами ==========
 def normalize_username(username):
     """Убирает @ в начале, если есть, но сохраняет регистр"""
     if not username:
@@ -80,7 +80,6 @@ def is_admin(username):
         return False
     
     admins = load_json_file(ADMINS_FILE, [])
-    # Точное сравнение с сохранением регистра
     return normalized_username in admins
 
 def add_admin(username):
@@ -90,7 +89,6 @@ def add_admin(username):
         return False
     
     admins = load_json_file(ADMINS_FILE, [])
-    # Точное сравнение с сохранением регистра
     if normalized_username not in admins:
         admins.append(normalized_username)
         save_json_file(ADMINS_FILE, admins)
@@ -133,6 +131,16 @@ def get_nickname(player_name):
     """Получает Telegram username для игрока"""
     nicknames = load_json_file(NICKNAMES_FILE, {})
     return nicknames.get(player_name)
+
+# ========== Функции для экранирования Markdown ==========
+def escape_markdown(text):
+    """Экранирует специальные символы Markdown"""
+    if not text:
+        return text
+    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
 
 # ========== Основные функции ==========
 def download_and_save_json() -> tuple[bool, str]:
@@ -255,20 +263,23 @@ def format_guild_list():
             unlinked_players.append((player_name, gp))
     
     # Формируем сообщение
-    message_lines = [f"🏰 *{guild_name}*", f"👥 Игроков {member_count}/50:\n"]
+    message_lines = [f"🏰 *{escape_markdown(guild_name)}*", f"👥 Игроков {member_count}/50:\n"]
     
     if linked_players:
         message_lines.append("*Привязанные воины:*")
         for i, (name, tg_name, gp) in enumerate(linked_players, 1):
             formatted_gp = f"{gp:,}".replace(',', ' ')
-            message_lines.append(f"{i}. {name} - @{tg_name} (GP: {formatted_gp})")
+            escaped_name = escape_markdown(name)
+            escaped_tg_name = escape_markdown(tg_name)
+            message_lines.append(f"{i}. {escaped_name} - @{escaped_tg_name} (GP: {formatted_gp})")
         message_lines.append("")
     
     if unlinked_players:
         message_lines.append("*Неизвестные воины:*")
         for i, (name, gp) in enumerate(unlinked_players, 1):
             formatted_gp = f"{gp:,}".replace(',', ' ')
-            message_lines.append(f"{i}. {name} (GP: {formatted_gp})")
+            escaped_name = escape_markdown(name)
+            message_lines.append(f"{i}. {escaped_name} (GP: {formatted_gp})")
     
     if result.get('last_sync') and result['last_sync'] != 'Неизвестно':
         message_lines.append(f"\n🕒 Данные от: {result['last_sync']}")
@@ -479,8 +490,12 @@ async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("📋 Список админов пуст.")
         return
     
-    # Формируем список админов
-    admin_list = [f"• @{admin}" for admin in admins]
+    # Формируем список админов с экранированием символов для Markdown
+    admin_list = []
+    for admin in admins:
+        escaped_admin = escape_markdown(admin)
+        admin_list.append(f"• @{escaped_admin}")
+    
     message_text = "👥 *Админы бота:*\n\n" + "\n".join(admin_list)
     
     # Кнопки только для главного админа
