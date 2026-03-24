@@ -25,6 +25,7 @@ JSON_FILE_PATH = os.path.join(DATA_FOLDER, 'guild_data.json')
 PLAYERS_LIST_FILE = os.path.join(DATA_FOLDER, 'players_list.txt')
 ADMINS_FILE = os.path.join(DATA_FOLDER, 'admins.json')
 NICKNAMES_FILE = os.path.join(DATA_FOLDER, 'nicknames.json')
+ROLES_FILE = os.path.join(DATA_FOLDER, 'roles.json')
 
 # Заголовки из вашего браузера (адаптированные для swgoh.gg)
 REQUEST_HEADERS = {
@@ -105,6 +106,27 @@ def remove_admin(username):
     if normalized_username in admins:
         admins.remove(normalized_username)
         save_json_file(ADMINS_FILE, admins)
+        return True
+    return False
+
+# ========== Функции для работы с ролями ==========
+def set_role(player_name, role):
+    """Устанавливает роль для игрока"""
+    roles = load_json_file(ROLES_FILE, {})
+    roles[player_name] = role
+    save_json_file(ROLES_FILE, roles)
+
+def get_role(player_name):
+    """Получает роль игрока"""
+    roles = load_json_file(ROLES_FILE, {})
+    return roles.get(player_name, "Воины Мандалора")  # По умолчанию "Воины Мандалора"
+
+def remove_role(player_name):
+    """Удаляет роль (возвращает к стандартной)"""
+    roles = load_json_file(ROLES_FILE, {})
+    if player_name in roles:
+        del roles[player_name]
+        save_json_file(ROLES_FILE, roles)
         return True
     return False
 
@@ -238,7 +260,7 @@ def parse_guild_data() -> dict:
         return {'error': f'Ошибка при обработке данных: {str(e)[:100]}'}
 
 def format_guild_list():
-    """Форматирует список игроков с привязками к Telegram с продолжением нумерации"""
+    """Форматирует список игроков с ролями и привязками к Telegram"""
     result = parse_guild_data()
     
     if 'error' in result:
@@ -248,40 +270,47 @@ def format_guild_list():
     member_count = result['member_count']
     players = result['players_raw']
     
-    # Разделяем игроков на привязанных и непривязанных
-    linked_players = []
-    unlinked_players = []
+    # Группируем игроков по ролям
+    role_groups = {
+        "Манд'алор": [],
+        "Офицеры": [],
+        "Воины Мандалора": [],
+        "Неизвестные воины": []
+    }
     
     for player in players:
         player_name = player['player_name']
         telegram_username = get_nickname(player_name)
+        role = get_role(player_name)
         gp = player['galactic_power']
         
-        if telegram_username:
-            linked_players.append((player_name, telegram_username, gp))
-        else:
-            unlinked_players.append((player_name, gp))
+        # Если игрок привязан к Telegram, он автоматически в "Воины Мандалора" если роль не указана
+        if role == "Воины Мандалора" and not telegram_username:
+            role = "Неизвестные воины"
+        
+        role_groups[role].append((player_name, telegram_username, gp))
     
-    # Формируем сообщение с продолжением нумерации
+    # Формируем сообщение
     message_lines = [f"🏰 *{escape_markdown(guild_name)}*", f"👥 Игроков {member_count}/50:\n"]
     
-    if linked_players:
-        message_lines.append("*Воины Мандалора:*")
-        for i, (name, tg_name, gp) in enumerate(linked_players, 1):
-            formatted_gp = f"{gp:,}".replace(',', ' ')
-            escaped_name = escape_markdown(name)
-            escaped_tg_name = escape_markdown(tg_name)
-            message_lines.append(f"{i}. {escaped_name} - @{escaped_tg_name} (GP: {formatted_gp})")
-        message_lines.append("")
+    current_number = 1
     
-    if unlinked_players:
-        message_lines.append("*Неизвестные воины:*")
-        # Нумерация продолжается с того места, где закончились привязанные игроки
-        start_number = len(linked_players) + 1
-        for i, (name, gp) in enumerate(unlinked_players, start_number):
-            formatted_gp = f"{gp:,}".replace(',', ' ')
-            escaped_name = escape_markdown(name)
-            message_lines.append(f"{i}. {escaped_name} (GP: {formatted_gp})")
+    # Порядок ролей: Манд'алор, Офицеры, Воины Мандалора, Неизвестные воины
+    for role in ["Манд'алор", "Офицеры", "Воины Мандалора", "Неизвестные воины"]:
+        players_in_role = role_groups[role]
+        if players_in_role:
+            message_lines.append(f"*{role}:*")
+            for player_name, telegram_username, gp in players_in_role:
+                formatted_gp = f"{gp:,}".replace(',', ' ')
+                escaped_name = escape_markdown(player_name)
+                
+                if telegram_username:
+                    escaped_tg_name = escape_markdown(telegram_username)
+                    message_lines.append(f"{current_number}. {escaped_name} - @{escaped_tg_name} (GP: {formatted_gp})")
+                else:
+                    message_lines.append(f"{current_number}. {escaped_name} (GP: {formatted_gp})")
+                current_number += 1
+            message_lines.append("")
     
     if result.get('last_sync') and result['last_sync'] != 'Неизвестно':
         message_lines.append(f"\n🕒 Данные от: {result['last_sync']}")
@@ -298,15 +327,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/guild_full - Получить полные данные (JSON-файл)\n"
         "/add ник игрока - @username - Привязать Telegram к игроку\n"
         "/remove ник игрока - Удалить привязку Telegram\n"
+        "/role ник игрока - Назначить роль игроку\n"
         "/admins - Показать список админов\n"
         "/help - Показать это сообщение\n\n"
         "📝 *Примеры:*\n"
         "/add Qbik - @KuBiK90\n"
         "/add Just Alex - @Alexey_B_B\n"
-        "/remove Qbik\n"
-        "/remove Just Alex\n\n"
+        "/role Just Alex\n"
+        "/remove Qbik\n\n"
         "💡 *Важно:* Имена с пробелами пишите без кавычек, просто через пробел.\n\n"
-        "💡 *Совет:* Сначала используйте /update для загрузки данных!",
+        "👑 *Роли:* Манд'алор, Офицеры, Воины Мандалора (по умолчанию), Неизвестные воины",
         parse_mode='Markdown'
     )
 
@@ -319,15 +349,21 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/guild_full - Получить полные данные (JSON-файл)\n"
         "/add ник игрока - @username - Привязать Telegram к игроку\n"
         "/remove ник игрока - Удалить привязку Telegram\n"
+        "/role ник игрока - Назначить роль игроку\n"
         "/admins - Показать список админов\n"
         "/help - Показать это сообщение\n\n"
         "📝 *Примеры:*\n"
         "/add Qbik - @KuBiK90\n"
         "/add Just Alex - @Alexey_B_B\n"
-        "/remove Qbik\n"
-        "/remove Just Alex\n\n"
+        "/role Just Alex\n"
+        "/remove Qbik\n\n"
+        "👑 *Роли:*\n"
+        "• Манд'алор - верховный лидер\n"
+        "• Офицеры - помощники\n"
+        "• Воины Мандалора - игроки с привязкой к Telegram\n"
+        "• Неизвестные воины - игроки без привязки\n\n"
         "💡 *Важно:* Имена с пробелами пишите без кавычек, просто через пробел.\n\n"
-        "👑 *Админы:* Управляются по username. Главный админ - @KuBiK90",
+        "👑 *Админы:* Любой админ может добавлять других админов.",
         parse_mode='Markdown'
     )
 
@@ -491,8 +527,7 @@ async def add_nickname_command(update: Update, context: ContextTypes.DEFAULT_TYP
     
     await update.message.reply_text(
         f"✅ Игрок \"{player_name}\" (GP: {formatted_gp}) привязан к @{telegram_username}\n\n"
-        f"Теперь в списке гильдии он будет отображаться как:\n"
-        f"{player_name} - @{telegram_username} (GP: {formatted_gp})"
+        f"Теперь в списке гильдии он будет отображаться в категории 'Воины Мандалора'"
     )
     
     logger.info(f"Админ @{username} добавил привязку \"{player_name}\" -> @{telegram_username}")
@@ -548,6 +583,65 @@ async def remove_nickname_command(update: Update, context: ContextTypes.DEFAULT_
     
     logger.info(f"Админ @{username} удалил привязку \"{player_name}\"")
 
+async def role_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Назначает роль игроку (доступно админам)"""
+    username = update.effective_user.username
+    if not username or not is_admin(username):
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+        return
+    
+    # Получаем имя игрока
+    full_text = update.message.text
+    if full_text.startswith('/role '):
+        player_name = full_text[6:].strip()
+    else:
+        player_name = ' '.join(context.args) if context.args else ''
+    
+    if not player_name:
+        await update.message.reply_text(
+            "❌ Укажите имя игрока.\n"
+            "Пример: /role Just Alex"
+        )
+        return
+    
+    # Проверяем, существует ли игрок в гильдии
+    result = parse_guild_data()
+    if 'error' in result:
+        await update.message.reply_text(f"❌ {result['error']}")
+        return
+    
+    players = result['players_raw']
+    player_exists = any(p['player_name'] == player_name for p in players)
+    
+    if not player_exists:
+        similar_names = [p['player_name'] for p in players if player_name.lower() in p['player_name'].lower()][:5]
+        if similar_names:
+            hint = "\n\n💡 Возможно, вы имели в виду:\n" + "\n".join([f"• {name}" for name in similar_names])
+        else:
+            hint = ""
+        
+        await update.message.reply_text(
+            f"❌ Такого воина нет в гильдии: {player_name}{hint}\n\n"
+            f"Используйте команду /guild для просмотра списка всех игроков."
+        )
+        return
+    
+    # Создаем кнопки для выбора роли
+    keyboard = [
+        [InlineKeyboardButton("👑 Манд'алор", callback_data=f"role_mandalor_{player_name}")],
+        [InlineKeyboardButton("⚔️ Офицеры", callback_data=f"role_officer_{player_name}")],
+        [InlineKeyboardButton("🛡️ Снять роль", callback_data=f"role_remove_{player_name}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    current_role = get_role(player_name)
+    await update.message.reply_text(
+        f"🎭 Выберите роль для игрока *{escape_markdown(player_name)}*\n\n"
+        f"Текущая роль: *{current_role}*",
+        parse_mode='Markdown',
+        reply_markup=reply_markup
+    )
+
 async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает список админов (без Markdown, чтобы символы отображались корректно)"""
     username = update.effective_user.username
@@ -561,31 +655,30 @@ async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("📋 Список админов пуст.")
         return
     
-    # Формируем список админов (без Markdown разметки)
+    # Формируем список админов
     admin_list = []
     for admin in admins:
         admin_list.append(f"• @{admin}")
     
     message_text = "👥 Админы бота:\n\n" + "\n".join(admin_list)
     
-    # Кнопки только для главного админа
+    # Кнопки для добавления/удаления админов (доступны всем админам)
     keyboard = []
-    if username == "KuBiK90":
+    if is_admin(username):
         keyboard.append([InlineKeyboardButton("➕ Добавить админа", callback_data="add_admin")])
         keyboard.append([InlineKeyboardButton("➖ Удалить админа", callback_data="remove_admin")])
     
     if keyboard:
         reply_markup = InlineKeyboardMarkup(keyboard)
-        # Отправляем без parse_mode, чтобы Markdown не применялся
         await update.message.reply_text(message_text, reply_markup=reply_markup)
     else:
         await update.message.reply_text(message_text)
 
 async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Добавляет админа по username (только для главного админа)"""
+    """Добавляет админа по username (доступно всем админам)"""
     username = update.effective_user.username
-    if username != "KuBiK90":
-        await update.message.reply_text("❌ Только главный админ @KuBiK90 может добавлять админов.")
+    if not username or not is_admin(username):
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
         return
     
     if not context.args:
@@ -608,17 +701,18 @@ async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             f"• /update - обновлять данные\n"
             f"• /add - привязывать игроков\n"
             f"• /remove - удалять привязки\n"
+            f"• /role - назначать роли\n"
             f"• /guild_full - получать JSON файл"
         )
-        logger.info(f"Главный админ @{username} добавил админа @{new_admin}")
+        logger.info(f"Админ @{username} добавил админа @{new_admin}")
     else:
         await update.message.reply_text(f"❌ Пользователь @{new_admin} уже является админом.")
 
 async def remove_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Удаляет админа по username (только для главного админа)"""
+    """Удаляет админа по username (доступно всем админам)"""
     username = update.effective_user.username
-    if username != "KuBiK90":
-        await update.message.reply_text("❌ Только главный админ @KuBiK90 может удалять админов.")
+    if not username or not is_admin(username):
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
         return
     
     if not context.args:
@@ -633,13 +727,13 @@ async def remove_admin_command(update: Update, context: ContextTypes.DEFAULT_TYP
     if admin_to_remove.startswith('@'):
         admin_to_remove = admin_to_remove[1:]
     
-    if admin_to_remove == "KuBiK90":
-        await update.message.reply_text("❌ Нельзя удалить главного админа.")
+    if admin_to_remove == username:
+        await update.message.reply_text("❌ Нельзя удалить самого себя.")
         return
     
     if remove_admin(admin_to_remove):
         await update.message.reply_text(f"✅ Пользователь @{admin_to_remove} удален из админов.")
-        logger.info(f"Главный админ @{username} удалил админа @{admin_to_remove}")
+        logger.info(f"Админ @{username} удалил админа @{admin_to_remove}")
     else:
         await update.message.reply_text(f"❌ Пользователь @{admin_to_remove} не является админом.")
 
@@ -648,13 +742,50 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     await query.answer()
     
-    # Проверяем, что пользователь - главный админ
     username = update.effective_user.username
-    if username != "KuBiK90":
-        await query.edit_message_text("❌ Только главный админ может управлять админами.")
-        return
     
-    if query.data == "add_admin":
+    # Обработка кнопок ролей
+    if query.data.startswith("role_"):
+        if not username or not is_admin(username):
+            await query.edit_message_text("❌ У вас нет прав для назначения ролей.")
+            return
+        
+        parts = query.data.split("_", 2)
+        if len(parts) < 3:
+            return
+        
+        action = parts[1]
+        player_name = parts[2]
+        
+        if action == "mandalor":
+            set_role(player_name, "Манд'алор")
+            await query.edit_message_text(
+                f"✅ Игроку *{escape_markdown(player_name)}* назначена роль *Манд'алор*",
+                parse_mode='Markdown'
+            )
+            logger.info(f"Админ @{username} назначил роль Манд'алор игроку {player_name}")
+        elif action == "officer":
+            set_role(player_name, "Офицеры")
+            await query.edit_message_text(
+                f"✅ Игроку *{escape_markdown(player_name)}* назначена роль *Офицеры*",
+                parse_mode='Markdown'
+            )
+            logger.info(f"Админ @{username} назначил роль Офицеры игроку {player_name}")
+        elif action == "remove":
+            remove_role(player_name)
+            await query.edit_message_text(
+                f"✅ Роль игрока *{escape_markdown(player_name)}* сброшена.\n"
+                f"Теперь он в категории 'Воины Мандалора' (если есть привязка) или 'Неизвестные воины'",
+                parse_mode='Markdown'
+            )
+            logger.info(f"Админ @{username} сбросил роль игрока {player_name}")
+    
+    # Обработка кнопок админов
+    elif query.data == "add_admin":
+        if not username or not is_admin(username):
+            await query.edit_message_text("❌ У вас нет прав для добавления админов.")
+            return
+        
         await query.edit_message_text(
             "✏️ Введите username пользователя, которого хотите сделать админом.\n"
             "Формат: /add_admin @username\n"
@@ -662,6 +793,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "Используйте команду прямо в чате."
         )
     elif query.data == "remove_admin":
+        if not username or not is_admin(username):
+            await query.edit_message_text("❌ У вас нет прав для удаления админов.")
+            return
+        
         await query.edit_message_text(
             "✏️ Введите username пользователя, которого хотите удалить из админов.\n"
             "Формат: /remove_admin @username\n"
@@ -689,6 +824,7 @@ def main() -> None:
     application.add_handler(CommandHandler("guild_full", get_guild_full))
     application.add_handler(CommandHandler("add", add_nickname_command))
     application.add_handler(CommandHandler("remove", remove_nickname_command))
+    application.add_handler(CommandHandler("role", role_command))
     application.add_handler(CommandHandler("admins", admins_command))
     application.add_handler(CommandHandler("add_admin", add_admin_command))
     application.add_handler(CommandHandler("remove_admin", remove_admin_command))
@@ -698,6 +834,7 @@ def main() -> None:
     
     logger.info("Бот запущен и готов к работе")
     logger.info("Главный админ: @KuBiK90")
+    logger.info("Любой админ может добавлять других админов и назначать роли")
     
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
