@@ -45,7 +45,7 @@ REQUEST_HEADERS = {
     "Origin": "https://swgoh.gg"
 }
 
-# Загрузка и сохранение данных
+# ========== Функции работы с файлами ==========
 def load_json_file(file_path, default=None):
     """Загружает JSON из файла"""
     if not os.path.exists(file_path):
@@ -61,31 +61,49 @@ def save_json_file(file_path, data):
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-def is_admin(user_id):
-    """Проверяет, является ли пользователь админом"""
+# ========== Функции для работы с админами (по username) ==========
+def is_admin(username):
+    """Проверяет, является ли пользователь админом по username"""
+    if not username:
+        return False
+    
+    # Убираем @ если есть
+    if username.startswith('@'):
+        username = username[1:]
+    
     admins = load_json_file(ADMINS_FILE, [])
-    return user_id in admins
+    return username in admins
 
-def add_admin(user_id):
-    """Добавляет админа"""
+def add_admin(username):
+    """Добавляет админа по username"""
+    if username.startswith('@'):
+        username = username[1:]
+    
     admins = load_json_file(ADMINS_FILE, [])
-    if user_id not in admins:
-        admins.append(user_id)
+    if username not in admins:
+        admins.append(username)
         save_json_file(ADMINS_FILE, admins)
         return True
     return False
 
-def remove_admin(user_id):
-    """Удаляет админа"""
+def remove_admin(username):
+    """Удаляет админа по username"""
+    if username.startswith('@'):
+        username = username[1:]
+    
     admins = load_json_file(ADMINS_FILE, [])
-    if user_id in admins:
-        admins.remove(user_id)
+    if username in admins:
+        admins.remove(username)
         save_json_file(ADMINS_FILE, admins)
         return True
     return False
 
+# ========== Функции для работы с привязками ников ==========
 def add_nickname(player_name, telegram_username):
     """Добавляет привязку ника игрока к Telegram username"""
+    if telegram_username.startswith('@'):
+        telegram_username = telegram_username[1:]
+    
     nicknames = load_json_file(NICKNAMES_FILE, {})
     nicknames[player_name] = telegram_username
     save_json_file(NICKNAMES_FILE, nicknames)
@@ -104,55 +122,7 @@ def get_nickname(player_name):
     nicknames = load_json_file(NICKNAMES_FILE, {})
     return nicknames.get(player_name)
 
-def format_guild_list():
-    """Форматирует список игроков с привязками к Telegram"""
-    result = parse_guild_data()
-    
-    if 'error' in result:
-        return result['error']
-    
-    guild_name = result['guild_name']
-    member_count = result['member_count']
-    players = result['players_raw']
-    
-    # Разделяем игроков на привязанных и непривязанных
-    linked_players = []
-    unlinked_players = []
-    
-    for player in players:
-        player_name = player['player_name']
-        telegram_username = get_nickname(player_name)
-        gp = player['galactic_power']
-        
-        if telegram_username:
-            # Убираем @ если он есть
-            if telegram_username.startswith('@'):
-                telegram_username = telegram_username[1:]
-            linked_players.append((player_name, telegram_username, gp))
-        else:
-            unlinked_players.append((player_name, gp))
-    
-    # Формируем сообщение
-    message_lines = [f"🏰 *{guild_name}*", f"👥 Игроков {member_count}/50:\n"]
-    
-    if linked_players:
-        message_lines.append("*Привязанные воины:*")
-        for i, (name, tg_name, gp) in enumerate(linked_players, 1):
-            formatted_gp = f"{gp:,}".replace(',', ' ')
-            message_lines.append(f"{i}. {name} - @{tg_name} (GP: {formatted_gp})")
-        message_lines.append("")
-    
-    if unlinked_players:
-        message_lines.append("*Неизвестные воины:*")
-        for i, (name, gp) in enumerate(unlinked_players, 1):
-            formatted_gp = f"{gp:,}".replace(',', ' ')
-            message_lines.append(f"{i}. {name} (GP: {formatted_gp})")
-    
-    if result.get('last_sync') and result['last_sync'] != 'Неизвестно':
-        message_lines.append(f"\n🕒 Данные от: {result['last_sync']}")
-    
-    return "\n".join(message_lines)
-
+# ========== Основные функции ==========
 def download_and_save_json() -> tuple[bool, str]:
     """Скачивает JSON с сайта используя заголовки браузера."""
     try:
@@ -247,7 +217,53 @@ def parse_guild_data() -> dict:
         logger.error(f"Непредвиденная ошибка при парсинге: {e}")
         return {'error': f'Ошибка при обработке данных: {str(e)[:100]}'}
 
-# Команды бота
+def format_guild_list():
+    """Форматирует список игроков с привязками к Telegram"""
+    result = parse_guild_data()
+    
+    if 'error' in result:
+        return result['error']
+    
+    guild_name = result['guild_name']
+    member_count = result['member_count']
+    players = result['players_raw']
+    
+    # Разделяем игроков на привязанных и непривязанных
+    linked_players = []
+    unlinked_players = []
+    
+    for player in players:
+        player_name = player['player_name']
+        telegram_username = get_nickname(player_name)
+        gp = player['galactic_power']
+        
+        if telegram_username:
+            linked_players.append((player_name, telegram_username, gp))
+        else:
+            unlinked_players.append((player_name, gp))
+    
+    # Формируем сообщение
+    message_lines = [f"🏰 *{guild_name}*", f"👥 Игроков {member_count}/50:\n"]
+    
+    if linked_players:
+        message_lines.append("*Привязанные воины:*")
+        for i, (name, tg_name, gp) in enumerate(linked_players, 1):
+            formatted_gp = f"{gp:,}".replace(',', ' ')
+            message_lines.append(f"{i}. {name} - @{tg_name} (GP: {formatted_gp})")
+        message_lines.append("")
+    
+    if unlinked_players:
+        message_lines.append("*Неизвестные воины:*")
+        for i, (name, gp) in enumerate(unlinked_players, 1):
+            formatted_gp = f"{gp:,}".replace(',', ' ')
+            message_lines.append(f"{i}. {name} (GP: {formatted_gp})")
+    
+    if result.get('last_sync') and result['last_sync'] != 'Неизвестно':
+        message_lines.append(f"\n🕒 Данные от: {result['last_sync']}")
+    
+    return "\n".join(message_lines)
+
+# ========== Команды бота ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "👋 Привет! Я бот для получения данных гильдии из SWGOH.gg\n\n"
@@ -276,13 +292,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/help - Показать это сообщение\n\n"
         "📝 *Примеры:*\n"
         "/add Qbik - @KuBiK90\n"
-        "/remove Qbik",
+        "/remove Qbik\n\n"
+        "👑 *Админы:* Управляются по username. Главный админ - @KuBiK90",
         parse_mode='Markdown'
     )
 
 async def update_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Скачивает свежие данные с сайта и сохраняет их."""
-    if not is_admin(update.effective_user.id):
+    username = update.effective_user.username
+    if not username or not is_admin(username):
         await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
         return
     
@@ -326,11 +344,12 @@ async def get_guild(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         await update.message.reply_text(message_text, parse_mode='Markdown')
     
-    logger.info(f"Список игроков отправлен пользователю {update.effective_user.id}")
+    logger.info(f"Список игроков отправлен пользователю @{update.effective_user.username}")
 
 async def get_guild_full(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Отправляет сохраненный JSON файл."""
-    if not is_admin(update.effective_user.id):
+    username = update.effective_user.username
+    if not username or not is_admin(username):
         await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
         return
     
@@ -357,7 +376,8 @@ async def get_guild_full(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def add_nickname_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Добавляет привязку Telegram к игроку"""
-    if not is_admin(update.effective_user.id):
+    username = update.effective_user.username
+    if not username or not is_admin(username):
         await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
         return
     
@@ -373,10 +393,6 @@ async def add_nickname_command(update: Update, context: ContextTypes.DEFAULT_TYP
     
     player_name = args[0]
     telegram_username = args[2]
-    
-    # Убираем @ если он есть
-    if telegram_username.startswith('@'):
-        telegram_username = telegram_username[1:]
     
     # Проверяем, существует ли игрок в гильдии
     result = parse_guild_data()
@@ -399,16 +415,17 @@ async def add_nickname_command(update: Update, context: ContextTypes.DEFAULT_TYP
     formatted_gp = f"{player_gp:,}".replace(',', ' ')
     
     await update.message.reply_text(
-        f"✅ Игрок {player_name} (GP: {formatted_gp}) привязан к @{telegram_username}\n\n"
+        f"✅ Игрок {player_name} (GP: {formatted_gp}) привязан к {telegram_username}\n\n"
         f"Теперь в списке гильдии он будет отображаться как:\n"
-        f"{player_name} - @{telegram_username} (GP: {formatted_gp})"
+        f"{player_name} - {telegram_username} (GP: {formatted_gp})"
     )
     
-    logger.info(f"Админ {update.effective_user.id} добавил привязку {player_name} -> @{telegram_username}")
+    logger.info(f"Админ @{username} добавил привязку {player_name} -> {telegram_username}")
 
 async def remove_nickname_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Удаляет привязку Telegram к игроку"""
-    if not is_admin(update.effective_user.id):
+    username = update.effective_user.username
+    if not username or not is_admin(username):
         await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
         return
     
@@ -435,11 +452,12 @@ async def remove_nickname_command(update: Update, context: ContextTypes.DEFAULT_
         f"Теперь он будет отображаться в списке 'Неизвестные воины'"
     )
     
-    logger.info(f"Админ {update.effective_user.id} удалил привязку {player_name}")
+    logger.info(f"Админ @{username} удалил привязку {player_name}")
 
 async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает список админов"""
-    if not is_admin(update.effective_user.id):
+    username = update.effective_user.username
+    if not username or not is_admin(username):
         await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
         return
     
@@ -449,20 +467,12 @@ async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("📋 Список админов пуст.")
         return
     
-    # Получаем информацию о пользователях
-    admin_list = []
-    for admin_id in admins:
-        try:
-            user = await context.bot.get_chat(admin_id)
-            admin_list.append(f"• {user.first_name} (@{user.username}) - `{admin_id}`")
-        except:
-            admin_list.append(f"• Пользователь {admin_id}")
-    
+    admin_list = [f"• @{admin}" for admin in admins]
     message_text = "👥 *Админы бота:*\n\n" + "\n".join(admin_list)
     
-    # Добавляем кнопку для добавления админа (только для главного админа)
+    # Кнопки только для главного админа
     keyboard = []
-    if update.effective_user.id == 785121984:  # ID @KuBiK90
+    if username == "KuBiK90":
         keyboard.append([InlineKeyboardButton("➕ Добавить админа", callback_data="add_admin")])
         keyboard.append([InlineKeyboardButton("➖ Удалить админа", callback_data="remove_admin")])
     
@@ -472,101 +482,97 @@ async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     else:
         await update.message.reply_text(message_text, parse_mode='Markdown')
 
+async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Добавляет админа по username (только для главного админа)"""
+    username = update.effective_user.username
+    if username != "KuBiK90":
+        await update.message.reply_text("❌ Только главный админ @KuBiK90 может добавлять админов.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажите username пользователя.\n"
+            "Пример: /add_admin @username\n"
+            "или /add_admin username"
+        )
+        return
+    
+    new_admin = context.args[0]
+    
+    if add_admin(new_admin):
+        await update.message.reply_text(f"✅ Пользователь {new_admin} добавлен в админы.")
+        logger.info(f"Главный админ добавил админа {new_admin}")
+    else:
+        await update.message.reply_text(f"❌ Пользователь {new_admin} уже является админом.")
+
+async def remove_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Удаляет админа по username (только для главного админа)"""
+    username = update.effective_user.username
+    if username != "KuBiK90":
+        await update.message.reply_text("❌ Только главный админ @KuBiK90 может удалять админов.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажите username пользователя.\n"
+            "Пример: /remove_admin @username\n"
+            "или /remove_admin username"
+        )
+        return
+    
+    admin_to_remove = context.args[0]
+    if admin_to_remove.startswith('@'):
+        admin_to_remove = admin_to_remove[1:]
+    
+    if admin_to_remove == "KuBiK90":
+        await update.message.reply_text("❌ Нельзя удалить главного админа.")
+        return
+    
+    if remove_admin(admin_to_remove):
+        await update.message.reply_text(f"✅ Пользователь @{admin_to_remove} удален из админов.")
+        logger.info(f"Главный админ удалил админа @{admin_to_remove}")
+    else:
+        await update.message.reply_text(f"❌ Пользователь @{admin_to_remove} не является админом.")
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка нажатий на кнопки"""
     query = update.callback_query
     await query.answer()
     
     # Проверяем, что пользователь - главный админ
-    if update.effective_user.id != 785121984:  # ID @KuBiK90
+    username = update.effective_user.username
+    if username != "KuBiK90":
         await query.edit_message_text("❌ Только главный админ может управлять админами.")
         return
     
     if query.data == "add_admin":
         await query.edit_message_text(
-            "✏️ Введите ID пользователя, которого хотите сделать админом.\n"
-            "Формат: /add_admin [ID]\n"
-            "Пример: /add_admin 123456789\n\n"
-            "ID пользователя можно узнать у него командой /id"
+            "✏️ Введите username пользователя, которого хотите сделать админом.\n"
+            "Формат: /add_admin @username\n"
+            "Пример: /add_admin @username\n\n"
+            "Используйте команду прямо в чате."
         )
     elif query.data == "remove_admin":
         await query.edit_message_text(
-            "✏️ Введите ID пользователя, которого хотите удалить из админов.\n"
-            "Формат: /remove_admin [ID]\n"
-            "Пример: /remove_admin 123456789"
+            "✏️ Введите username пользователя, которого хотите удалить из админов.\n"
+            "Формат: /remove_admin @username\n"
+            "Пример: /remove_admin @username\n\n"
+            "Используйте команду прямо в чате."
         )
 
-async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Добавляет админа (только для главного админа)"""
-    if update.effective_user.id != 785121984:  # ID @KuBiK90
-        await update.message.reply_text("❌ Только главный админ может добавлять админов.")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("❌ Укажите ID пользователя.\nПример: /add_admin 123456789")
-        return
-    
-    try:
-        user_id = int(context.args[0])
-        
-        if add_admin(user_id):
-            await update.message.reply_text(f"✅ Пользователь {user_id} добавлен в админы.")
-            logger.info(f"Главный админ добавил админа {user_id}")
-        else:
-            await update.message.reply_text(f"❌ Пользователь {user_id} уже является админом.")
-    except ValueError:
-        await update.message.reply_text("❌ Неверный формат ID. ID должен быть числом.")
-
-async def remove_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Удаляет админа (только для главного админа)"""
-    if update.effective_user.id != 785121984:  # ID @KuBiK90
-        await update.message.reply_text("❌ Только главный админ может удалять админов.")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("❌ Укажите ID пользователя.\nПример: /remove_admin 123456789")
-        return
-    
-    try:
-        user_id = int(context.args[0])
-        
-        if user_id == 785121984:
-            await update.message.reply_text("❌ Нельзя удалить главного админа.")
-            return
-        
-        if remove_admin(user_id):
-            await update.message.reply_text(f"✅ Пользователь {user_id} удален из админов.")
-            logger.info(f"Главный админ удалил админа {user_id}")
-        else:
-            await update.message.reply_text(f"❌ Пользователь {user_id} не является админом.")
-    except ValueError:
-        await update.message.reply_text("❌ Неверный формат ID. ID должен быть числом.")
-
-async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает ID пользователя"""
-    user_id = update.effective_user.id
-    username = update.effective_user.username or "нет username"
-    first_name = update.effective_user.first_name or ""
-    
-    await update.message.reply_text(
-        f"📋 *Ваши данные:*\n"
-        f"ID: `{user_id}`\n"
-        f"Имя: {first_name}\n"
-        f"Username: @{username}\n\n"
-        f"Эти данные нужны для добавления в админы бота.",
-        parse_mode='Markdown'
-    )
-
+# ========== Запуск бота ==========
 def main() -> None:
+    # ВАЖНО: замените на ваш новый токен после отзыва старого!
     TOKEN = "8295503667:AAEHfdeLyL158BE1qcRTLCpp0ya5BbzSFe4"
     
-    # Инициализируем данные
+    # Инициализируем данные с главным админом по username
     if not os.path.exists(ADMINS_FILE):
-        save_json_file(ADMINS_FILE, [785121984])  # Добавляем @KuBiK90 как главного админа
+        save_json_file(ADMINS_FILE, ["KuBiK90"])
+        logger.info("Создан файл админов с главным админом @KuBiK90")
     
     application = Application.builder().token(TOKEN).build()
     
-    # Команды
+    # Регистрируем команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("update", update_data))
@@ -577,12 +583,13 @@ def main() -> None:
     application.add_handler(CommandHandler("admins", admins_command))
     application.add_handler(CommandHandler("add_admin", add_admin_command))
     application.add_handler(CommandHandler("remove_admin", remove_admin_command))
-    application.add_handler(CommandHandler("id", get_id))
     
     # Обработчик кнопок
     application.add_handler(CallbackQueryHandler(button_callback))
     
     logger.info("Бот запущен и готов к работе")
+    logger.info("Главный админ: @KuBiK90")
+    
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
