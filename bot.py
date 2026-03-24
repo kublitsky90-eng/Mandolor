@@ -478,7 +478,7 @@ async def remove_nickname_command(update: Update, context: ContextTypes.DEFAULT_
     logger.info(f"Админ @{username} удалил привязку {player_name}")
 
 async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает список админов"""
+    """Показывает список админов (без Markdown, чтобы символы отображались корректно)"""
     username = update.effective_user.username
     if not username or not is_admin(username):
         await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
@@ -490,13 +490,12 @@ async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("📋 Список админов пуст.")
         return
     
-    # Формируем список админов с экранированием символов для Markdown
+    # Формируем список админов (без Markdown разметки)
     admin_list = []
     for admin in admins:
-        escaped_admin = escape_markdown(admin)
-        admin_list.append(f"• @{escaped_admin}")
+        admin_list.append(f"• @{admin}")
     
-    message_text = "👥 *Админы бота:*\n\n" + "\n".join(admin_list)
+    message_text = "👥 Админы бота:\n\n" + "\n".join(admin_list)
     
     # Кнопки только для главного админа
     keyboard = []
@@ -506,9 +505,10 @@ async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     if keyboard:
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(message_text, parse_mode='Markdown', reply_markup=reply_markup)
+        # Отправляем без parse_mode, чтобы Markdown не применялся
+        await update.message.reply_text(message_text, reply_markup=reply_markup)
     else:
-        await update.message.reply_text(message_text, parse_mode='Markdown')
+        await update.message.reply_text(message_text)
 
 async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Добавляет админа по username (только для главного админа)"""
