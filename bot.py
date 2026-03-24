@@ -23,19 +23,23 @@ if not os.path.exists(DATA_FOLDER):
 
 JSON_FILE_PATH = os.path.join(DATA_FOLDER, 'guild_data.json')
 
-# Заголовки, которые использует браузер (скопируйте из Network -> Request Headers)
+# Заголовки из вашего браузера (адаптированные для swgoh.gg)
 REQUEST_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'application/json, text/plain, */*',
-    'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Connection': 'keep-alive',
-    'Referer': 'https://swgoh.gg/',
-    'Sec-Fetch-Dest': 'empty',
-    'Sec-Fetch-Mode': 'cors',
-    'Sec-Fetch-Site': 'same-origin',
-    # Добавьте Cookie, если они есть в вашем браузере
-    # 'Cookie': 'ваши_куки_здесь',
+    "Host": "swgoh.gg",
+    "Connection": "keep-alive",
+    "sec-ch-ua": "\"Not:A-Brand\";v=\"99\", \"Microsoft Edge\";v=\"145\", \"Chromium\";v=\"145\"",
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": "\"Windows\"",
+    "Upgrade-Insecure-Requests": "1",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36 Edg/145.0.0.0",
+    "Accept": "application/json, text/plain, */*",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Dest": "empty",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Accept-Language": "ru,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "Referer": "https://swgoh.gg/",
+    "Origin": "https://swgoh.gg"
 }
 
 def download_and_save_json() -> tuple[bool, str]:
@@ -48,16 +52,20 @@ def download_and_save_json() -> tuple[bool, str]:
         
         # Сначала заходим на главную страницу, чтобы получить куки
         logger.info("Заходим на главную страницу для получения куки...")
-        session.get('https://swgoh.gg/', headers=REQUEST_HEADERS, timeout=10)
+        main_response = session.get('https://swgoh.gg/', headers=REQUEST_HEADERS, timeout=10)
+        logger.info(f"Главная страница: статус {main_response.status_code}")
         
         # Теперь запрашиваем API
         logger.info("Запрашиваем API...")
         response = session.get(GUILD_URL, headers=REQUEST_HEADERS, timeout=15)
         
-        logger.info(f"Статус ответа: {response.status_code}")
+        logger.info(f"Статус ответа API: {response.status_code}")
         
         if response.status_code == 403:
-            return False, "Сайт вернул 403 Forbidden. Попробуйте скопировать куки из браузера."
+            return False, "Сайт вернул 403 Forbidden. Возможно, требуется авторизация."
+        
+        if response.status_code == 404:
+            return False, "Страница не найдена (404). Проверьте URL гильдии."
         
         response.raise_for_status()
         
@@ -86,9 +94,9 @@ def download_and_save_json() -> tuple[bool, str]:
         return True, f"Гильдия: {guild_name}, участников: {member_count}"
         
     except requests.exceptions.Timeout:
-        return False, "Таймаут при подключении к серверу"
+        return False, "Таймаут при подключении к серверу. Попробуйте позже."
     except requests.exceptions.ConnectionError:
-        return False, "Не удалось подключиться к серверу"
+        return False, "Не удалось подключиться к серверу. Проверьте интернет-соединение."
     except requests.exceptions.RequestException as e:
         return False, f"Ошибка запроса: {str(e)[:100]}"
     except Exception as e:
@@ -161,10 +169,8 @@ async def update_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await message.edit_text(
             f"❌ Не удалось обновить данные.\n"
             f"Причина: {info}\n\n"
-            f"💡 Возможные решения:\n"
-            f"• Проверьте подключение к интернету\n"
-            f"• Попробуйте позже\n"
-            f"• Если у вас есть JSON файл, поместите его в папку data/guild_data.json"
+            f"💡 Альтернатива:\n"
+            f"Если у вас есть JSON файл, поместите его в папку data/guild_data.json"
         )
 
 async def get_guild(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -196,6 +202,8 @@ async def get_guild(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
     else:
         await update.message.reply_text(message_text, parse_mode='Markdown')
+    
+    logger.info(f"Список игроков отправлен пользователю {update.effective_user.id}")
 
 async def get_guild_full(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Отправляет сохраненный JSON файл."""
@@ -244,7 +252,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 def main() -> None:
-    TOKEN = "8295503667:AAEHfdeLyL158BE1qcRTLCpp0ya5BbzSFe4"
+    # ВАЖНО: замените на ваш новый токен после отзыва старого!
+    TOKEN = "ВАШ_НОВЫЙ_ТОКЕН_ЗДЕСЬ"
     
     application = Application.builder().token(TOKEN).build()
     
