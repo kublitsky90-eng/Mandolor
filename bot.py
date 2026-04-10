@@ -2,7 +2,8 @@ import requests
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
+from collections import defaultdict
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
@@ -26,6 +27,8 @@ PLAYERS_LIST_FILE = os.path.join(DATA_FOLDER, 'players_list.txt')
 ADMINS_FILE = os.path.join(DATA_FOLDER, 'admins.json')
 NICKNAMES_FILE = os.path.join(DATA_FOLDER, 'nicknames.json')
 ROLES_FILE = os.path.join(DATA_FOLDER, 'roles.json')
+LAST_GUILD_MSG_FILE = os.path.join(DATA_FOLDER, 'last_guild_msg.json')
+HISTORY_FILE = os.path.join(DATA_FOLDER, 'gp_history.json')
 
 # Заголовки из вашего браузера (адаптированные для swgoh.gg)
 REQUEST_HEADERS = {
@@ -46,6 +49,15 @@ REQUEST_HEADERS = {
     "Origin": "https://swgoh.gg"
 }
 
+# Маппинг лиг для красивого отображения
+LEAGUE_NAMES = {
+    'Carbonite': '🪨 Карбонит',
+    'Bronzium': '🥉 Бронзиум',
+    'Chromium': '🔵 Хромиум',
+    'Aurodium': '🟡 Ауродиум',
+    'Kyber': '💎 Кайбер'
+}
+
 # ========== Функции работы с файлами ==========
 def load_json_file(file_path, default=None):
     """Загружает JSON из файла"""
@@ -61,6 +73,87 @@ def save_json_file(file_path, data):
     """Сохраняет JSON в файл"""
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+
+# ========== Функции для работы с историей GP ==========
+def save_gp_history(current_data):
+    """Сохраняет историю GP игроков"""
+    history = load_json_file(HISTORY_FILE, {})
+    timestamp = datetime.now().isoformat()
+    
+    players_gp = {}
+    for player in current_data.get('players_raw', []):
+        player_name = player['player_name']
+        players_gp[player_name] = {
+            'gp': player['galactic_power'],
+            'timestamp': timestamp
+        }
+    
+    if not history:
+        history['snapshots'] = []
+    
+    history['snapshots'].append({
+        'timestamp': timestamp,
+        'players': players_gp
+    })
+    
+    # Оставляем только последние 30 снимков
+    if len(history['snapshots']) > 30:
+        history['snapshots'] = history['snapshots'][-30:]
+    
+    save_json_file(HISTORY_FILE, history)
+    return history
+
+def get_gp_changes(player_name, days=7):
+    """Получает изменение GP игрока за указанное количество дней"""
+    history = load_json_file(HISTORY_FILE, {})
+    if not history or 'snapshots' not in history or len(history['snapshots']) < 2:
+        return None
+    
+    target_date = datetime.now() - timedelta(days=days)
+    
+    old_snapshot = None
+    new_snapshot = history['snapshots'][-1]
+    
+    for snapshot in history['snapshots'][::-1]:
+        snapshot_date = datetime.fromisoformat(snapshot['timestamp'])
+        if snapshot_date <= target_date:
+            old_snapshot = snapshot
+            break
+    
+    if not old_snapshot:
+        old_snapshot = history['snapshots'][0]
+    
+    old_gp = old_snapshot['players'].get(player_name, {}).get('gp', 0)
+    new_gp = new_snapshot['players'].get(player_name, {}).get('gp', 0)
+    
+    if old_gp == 0:
+        return None
+    
+    return {
+        'change': new_gp - old_gp,
+        'old_gp': old_gp,
+        'new_gp': new_gp,
+        'days': (datetime.now() - datetime.fromisoformat(old_snapshot['timestamp'])).days
+    }
+
+# ========== Функции для работы с последним сообщением ==========
+def save_last_guild_message(chat_id, message_id):
+    """Сохраняет информацию о последнем сообщении со списком гильдии"""
+    data = {
+        'chat_id': chat_id,
+        'message_id': message_id,
+        'timestamp': datetime.now().isoformat()
+    }
+    save_json_file(LAST_GUILD_MSG_FILE, data)
+
+def get_last_guild_message():
+    """Получает информацию о последнем сообщении со списком гильдии"""
+    return load_json_file(LAST_GUILD_MSG_FILE, None)
+
+def clear_last_guild_message():
+    """Очищает информацию о последнем сообщении"""
+    if os.path.exists(LAST_GUILD_MSG_FILE):
+        os.remove(LAST_GUILD_MSG_FILE)
 
 # ========== Функции для работы с админами ==========
 def normalize_username(username):
@@ -119,7 +212,7 @@ def set_role(player_name, role):
 def get_role(player_name):
     """Получает роль игрока"""
     roles = load_json_file(ROLES_FILE, {})
-    return roles.get(player_name, "Воины Мандалора")  # По умолчанию "Воины Мандалора"
+    return roles.get(player_name, "Воины Мандалора")
 
 def remove_role(player_name):
     """Удаляет роль (возвращает к стандартной)"""
@@ -241,12 +334,12 @@ def parse_guild_data() -> dict:
         if not members:
             return {'error': 'Не удалось найти список участников гильдии'}
         
-        # Сортируем игроков по ГМ (мощности) по убыванию
         sorted_members = sorted(members, key=lambda x: x.get('galactic_power', 0), reverse=True)
         
         return {
             'success': True,
             'guild_name': guild_name,
+            'guild_data': guild_data,
             'member_count': member_count,
             'players_raw': sorted_members,
             'last_sync': data.get('last_sync', 'Неизвестно')
@@ -270,7 +363,6 @@ def format_guild_list():
     member_count = result['member_count']
     players = result['players_raw']
     
-    # Группируем игроков по ролям
     role_groups = {
         "Манд'алор": [],
         "Офицеры": [],
@@ -284,18 +376,15 @@ def format_guild_list():
         role = get_role(player_name)
         gp = player['galactic_power']
         
-        # Если игрок привязан к Telegram, он автоматически в "Воины Мандалора" если роль не указана
         if role == "Воины Мандалора" and not telegram_username:
             role = "Неизвестные воины"
         
         role_groups[role].append((player_name, telegram_username, gp))
     
-    # Формируем сообщение
     message_lines = [f"🏰 *{escape_markdown(guild_name)}*", f"👥 Игроков {member_count}/50:\n"]
     
     current_number = 1
     
-    # Порядок ролей: Манд'алор, Офицеры, Воины Мандалора, Неизвестные воины
     for role in ["Манд'алор", "Офицеры", "Воины Мандалора", "Неизвестные воины"]:
         players_in_role = role_groups[role]
         if players_in_role:
@@ -317,6 +406,165 @@ def format_guild_list():
     
     return "\n".join(message_lines)
 
+# ========== Функции статистики ==========
+def calculate_guild_stats():
+    """Рассчитывает общую статистику гильдии"""
+    result = parse_guild_data()
+    if 'error' in result:
+        return None
+    
+    players = result['players_raw']
+    gps = [p['galactic_power'] for p in players]
+    total_gp = sum(gps)
+    avg_gp = total_gp // len(players) if players else 0
+    
+    sorted_gps = sorted(gps)
+    median_gp = sorted_gps[len(sorted_gps)//2] if sorted_gps else 0
+    
+    linked_count = 0
+    for player in players:
+        if get_nickname(player['player_name']):
+            linked_count += 1
+    
+    # Новые диапазоны GP
+    ranges = [
+        (0, 4_000_000, '🔵 0-4M'),
+        (4_000_000, 6_000_000, '🟢 4-6M'),
+        (6_000_000, 8_000_000, '🟡 6-8M'),
+        (8_000_000, 10_000_000, '🟠 8-10M'),
+        (10_000_000, float('inf'), '🔴 10M+')
+    ]
+    
+    distribution = []
+    for low, high, label in ranges:
+        count = sum(1 for gp in gps if low <= gp < high)
+        if count > 0:
+            percentage = (count / len(players)) * 100
+            bar_length = int(percentage / 2)
+            bar = '█' * bar_length
+            distribution.append(f"{label}: {count:2d} ({percentage:3.0f}%) {bar}")
+    
+    role_counts = defaultdict(int)
+    for player in players:
+        role = get_role(player['player_name'])
+        role_counts[role] += 1
+    
+    return {
+        'guild_name': result['guild_name'],
+        'member_count': result['member_count'],
+        'total_gp': total_gp,
+        'avg_gp': avg_gp,
+        'median_gp': median_gp,
+        'linked_count': linked_count,
+        'unlinked_count': len(players) - linked_count,
+        'distribution': distribution,
+        'role_counts': dict(role_counts),
+        'last_sync': result.get('last_sync', 'Неизвестно')
+    }
+
+def calculate_arena_stats():
+    """Рассчитывает статистику по арене"""
+    result = parse_guild_data()
+    if 'error' in result:
+        return None
+    
+    players = result['players_raw']
+    guild_data = result.get('guild_data', {})
+    
+    league_stats = defaultdict(int)
+    division_stats = defaultdict(int)
+    
+    for player in players:
+        player_data = None
+        for member in guild_data.get('data', {}).get('members', []):
+            if member.get('player_name') == player['player_name']:
+                player_data = member
+                break
+        
+        if player_data:
+            grand_arena = player_data.get('grand_arena', {})
+            if grand_arena:
+                league = grand_arena.get('league', {}).get('name', 'Unknown')
+                division = grand_arena.get('division', 'Unknown')
+                
+                if league in LEAGUE_NAMES:
+                    league_stats[LEAGUE_NAMES[league]] += 1
+                else:
+                    league_stats[league] += 1
+                
+                division_stats[division] += 1
+    
+    return {
+        'guild_name': result['guild_name'],
+        'member_count': result['member_count'],
+        'league_stats': dict(league_stats),
+        'division_stats': dict(division_stats),
+        'last_sync': result.get('last_sync', 'Неизвестно')
+    }
+
+def calculate_dynamic_stats():
+    """Рассчитывает динамику роста"""
+    result = parse_guild_data()
+    if 'error' in result:
+        return None
+    
+    players = result['players_raw']
+    
+    save_gp_history(result)
+    
+    weekly_changes = []
+    monthly_changes = []
+    
+    for player in players:
+        player_name = player['player_name']
+        current_gp = player['galactic_power']
+        
+        weekly = get_gp_changes(player_name, 7)
+        if weekly and weekly['change'] != 0:
+            weekly_changes.append({
+                'name': player_name,
+                'change': weekly['change'],
+                'current_gp': current_gp
+            })
+        
+        monthly = get_gp_changes(player_name, 30)
+        if monthly and monthly['change'] != 0:
+            monthly_changes.append({
+                'name': player_name,
+                'change': monthly['change'],
+                'current_gp': current_gp
+            })
+    
+    weekly_changes.sort(key=lambda x: x['change'], reverse=True)
+    monthly_changes.sort(key=lambda x: x['change'], reverse=True)
+    
+    predictions = []
+    for player in weekly_changes[:10]:
+        if player['change'] > 0:
+            current_gp = player['current_gp']
+            next_million = ((current_gp // 1_000_000) + 1) * 1_000_000
+            gp_needed = next_million - current_gp
+            
+            if gp_needed > 0 and player['change'] > 0:
+                weeks_needed = gp_needed / player['change']
+                if weeks_needed <= 52:
+                    predictions.append({
+                        'name': player['name'],
+                        'current_gp': current_gp,
+                        'next_million': next_million,
+                        'weeks_needed': weeks_needed
+                    })
+    
+    return {
+        'guild_name': result['guild_name'],
+        'member_count': result['member_count'],
+        'weekly_top': weekly_changes[:5],
+        'weekly_bottom': weekly_changes[-5:] if len(weekly_changes) >= 5 else weekly_changes,
+        'monthly_top': monthly_changes[:5],
+        'predictions': predictions[:5],
+        'last_sync': result.get('last_sync', 'Неизвестно')
+    }
+
 # ========== Команды бота ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
@@ -325,6 +573,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/update - Скачать свежие данные с swgoh.gg\n"
         "/guild - Показать список игроков гильдии\n"
         "/guild_full - Получить полные данные (JSON-файл)\n"
+        "/stats - Общая статистика гильдии\n"
+        "/stats_arena - Статистика по Великой Арене\n"
+        "/stats_dynamic - Динамика роста игроков\n"
         "/add ник игрока - @username - Привязать Telegram к игроку\n"
         "/remove ник игрока - Удалить привязку Telegram\n"
         "/role ник игрока - Назначить роль игроку\n"
@@ -335,8 +586,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/add Just Alex - @Alexey_B_B\n"
         "/role Just Alex\n"
         "/remove Qbik\n\n"
-        "💡 *Важно:* Имена с пробелами пишите без кавычек, просто через пробел.\n\n"
-        "👑 *Роли:* Манд'алор, Офицеры, Воины Мандалора (по умолчанию), Неизвестные воины",
+        "💡 *Важно:* Имена с пробелами пишите без кавычек, просто через пробел.",
         parse_mode='Markdown'
     )
 
@@ -347,6 +597,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/update - Скачать свежие данные с swgoh.gg\n"
         "/guild - Показать список игроков гильдии\n"
         "/guild_full - Получить полные данные (JSON-файл)\n"
+        "/stats - Общая статистика гильдии\n"
+        "/stats_arena - Статистика по Великой Арене\n"
+        "/stats_dynamic - Динамика роста игроков\n"
         "/add ник игрока - @username - Привязать Telegram к игроку\n"
         "/remove ник игрока - Удалить привязку Telegram\n"
         "/role ник игрока - Назначить роль игроку\n"
@@ -362,10 +615,133 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• Офицеры - помощники\n"
         "• Воины Мандалора - игроки с привязкой к Telegram\n"
         "• Неизвестные воины - игроки без привязки\n\n"
-        "💡 *Важно:* Имена с пробелами пишите без кавычек, просто через пробел.\n\n"
         "👑 *Админы:* Любой админ может добавлять других админов.",
         parse_mode='Markdown'
     )
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает общую статистику гильдии"""
+    stats = calculate_guild_stats()
+    
+    if not stats:
+        await update.message.reply_text("❌ Не удалось получить статистику. Убедитесь, что данные загружены (/update).")
+        return
+    
+    message = f"📊 *Статистика гильдии*\n\n"
+    message += f"🏰 *{escape_markdown(stats['guild_name'])}*\n"
+    message += f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+    
+    message += f"📋 *Общая информация:*\n"
+    message += f"• Всего игроков: {stats['member_count']}/50\n"
+    message += f"• Общий GP: {stats['total_gp']:,}\n".replace(',', ' ')
+    message += f"• Средний GP: {stats['avg_gp']:,}\n".replace(',', ' ')
+    message += f"• Медианный GP: {stats['median_gp']:,}\n".replace(',', ' ')
+    message += f"• Последняя синхронизация: {stats['last_sync']}\n\n"
+    
+    message += f"👥 *Активность:*\n"
+    message += f"• Привязано к Telegram: {stats['linked_count']} ({stats['linked_count']*100//stats['member_count']}%)\n"
+    message += f"• Не привязано: {stats['unlinked_count']} ({stats['unlinked_count']*100//stats['member_count']}%)\n\n"
+    
+    message += f"🎭 *Роли:*\n"
+    for role, count in stats['role_counts'].items():
+        message += f"• {role}: {count}\n"
+    message += "\n"
+    
+    message += f"📈 *Распределение GP:*\n"
+    for line in stats['distribution']:
+        message += f"{line}\n"
+    
+    await update.message.reply_text(message, parse_mode='Markdown')
+
+async def stats_arena_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает статистику по Великой Арене"""
+    stats = calculate_arena_stats()
+    
+    if not stats:
+        await update.message.reply_text("❌ Не удалось получить статистику арены. Убедитесь, что данные загружены (/update).")
+        return
+    
+    message = f"⚔️ *Статистика Великой Арены*\n\n"
+    message += f"🏰 *{escape_markdown(stats['guild_name'])}*\n"
+    message += f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+    
+    if stats['league_stats']:
+        message += f"🏆 *Распределение по лигам:*\n"
+        for league, count in sorted(stats['league_stats'].items(), key=lambda x: x[1], reverse=True):
+            percentage = count * 100 // stats['member_count']
+            bar = '█' * (percentage // 5)
+            message += f"{league}: {count} ({percentage}%) {bar}\n"
+    else:
+        message += f"❌ Данные о лигах не найдены в API.\n"
+        message += f"Возможно, структура данных изменилась.\n\n"
+    
+    if stats['division_stats']:
+        message += f"\n📊 *Распределение по дивизионам:*\n"
+        for division, count in sorted(stats['division_stats'].items()):
+            message += f"• Дивизион {division}: {count}\n"
+    
+    message += f"\n🕒 Данные от: {stats['last_sync']}"
+    
+    await update.message.reply_text(message, parse_mode='Markdown')
+
+async def stats_dynamic_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает динамику роста игроков"""
+    stats = calculate_dynamic_stats()
+    
+    if not stats:
+        await update.message.reply_text("❌ Не удалось получить динамику. Убедитесь, что данные загружены (/update).")
+        return
+    
+    message = f"📈 *Динамика роста гильдии*\n\n"
+    message += f"🏰 *{escape_markdown(stats['guild_name'])}*\n"
+    message += f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+    
+    if stats['weekly_top']:
+        message += f"🚀 *Топ-5 по росту GP (неделя):*\n"
+        for i, player in enumerate(stats['weekly_top'], 1):
+            change_millions = player['change'] / 1_000_000
+            message += f"{i}. *{escape_markdown(player['name'])}* +{change_millions:.2f}M GP\n"
+        message += "\n"
+    
+    if stats['weekly_bottom'] and stats['weekly_bottom'][0]['change'] < 0:
+        message += f"📉 *Аутсайдеры по росту GP (неделя):*\n"
+        for i, player in enumerate(stats['weekly_bottom'][:3], 1):
+            change_millions = player['change'] / 1_000_000
+            message += f"{i}. *{escape_markdown(player['name'])}* {change_millions:.2f}M GP\n"
+        message += "\n"
+    
+    if stats['monthly_top']:
+        message += f"🌟 *Топ-5 по росту GP (месяц):*\n"
+        for i, player in enumerate(stats['monthly_top'], 1):
+            change_millions = player['change'] / 1_000_000
+            message += f"{i}. *{escape_markdown(player['name'])}* +{change_millions:.2f}M GP\n"
+        message += "\n"
+    
+    if stats['predictions']:
+        message += f"🔮 *Прогноз достижения следующего миллиона:*\n"
+        for player in stats['predictions']:
+            current_millions = player['current_gp'] / 1_000_000
+            next_millions = player['next_million'] / 1_000_000
+            weeks = player['weeks_needed']
+            
+            if weeks < 1:
+                time_str = f"{weeks*7:.0f} дней"
+            elif weeks < 4:
+                time_str = f"{weeks:.1f} недель"
+            else:
+                time_str = f"{weeks/4:.1f} месяцев"
+            
+            message += f"• *{escape_markdown(player['name'])}*: {current_millions:.1f}M → {next_millions:.0f}M (~{time_str})\n"
+        message += "\n"
+    
+    if not stats['weekly_top'] and not stats['monthly_top']:
+        message += f"📊 *Статус:*\n"
+        message += f"Недостаточно исторических данных для анализа динамики.\n"
+        message += f"Данные будут собираться автоматически при каждом обновлении (/update).\n"
+    
+    message += f"\n🕒 Данные от: {stats['last_sync']}"
+    
+    await update.message.reply_text(message, parse_mode='Markdown')
 
 async def update_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Скачивает свежие данные с сайта и сохраняет их."""
@@ -379,11 +755,16 @@ async def update_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     success, info = download_and_save_json()
     
     if success:
+        result = parse_guild_data()
+        if 'success' in result:
+            save_gp_history(result)
+        
         await message.edit_text(
             f"✅ Данные успешно обновлены!\n"
             f"📊 {info}\n"
             f"🕒 Время обновления: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-            f"Теперь используйте команду /guild для просмотра списка игроков"
+            f"Теперь используйте команду /guild для просмотра списка игроков\n"
+            f"Или /stats для просмотра статистики"
         )
     else:
         await message.edit_text(
@@ -394,25 +775,55 @@ async def update_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
 
 async def get_guild(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Парсит сохраненный JSON и выводит список игроков."""
+    """Парсит сохраненный JSON и выводит список игроков (редактирует предыдущее сообщение)"""
     message_text = format_guild_list()
     
     if message_text.startswith("❌"):
         await update.message.reply_text(message_text)
         return
     
-    # Сохраняем список в файл
     with open(PLAYERS_LIST_FILE, 'w', encoding='utf-8') as f:
         f.write(message_text)
     
-    if len(message_text) > 4096:
-        await update.message.reply_document(
-            document=open(PLAYERS_LIST_FILE, 'rb'),
-            filename='guild_players.txt',
-            caption="📊 Список игроков гильдии"
-        )
-    else:
-        await update.message.reply_text(message_text, parse_mode='Markdown')
+    last_msg = get_last_guild_message()
+    current_chat_id = update.effective_chat.id
+    
+    try:
+        if last_msg and last_msg.get('chat_id') == current_chat_id:
+            await context.bot.edit_message_text(
+                chat_id=last_msg['chat_id'],
+                message_id=last_msg['message_id'],
+                text=message_text,
+                parse_mode='Markdown'
+            )
+            logger.info(f"Сообщение отредактировано (ID: {last_msg['message_id']}")
+            
+            notification = await update.message.reply_text("✅ Список гильдии обновлен!")
+            await notification.delete()
+            
+        else:
+            if len(message_text) > 4096:
+                sent_message = await update.message.reply_document(
+                    document=open(PLAYERS_LIST_FILE, 'rb'),
+                    filename='guild_players.txt',
+                    caption="📊 Список игроков гильдии"
+                )
+            else:
+                sent_message = await update.message.reply_text(message_text, parse_mode='Markdown')
+                save_last_guild_message(current_chat_id, sent_message.message_id)
+                
+    except Exception as e:
+        logger.warning(f"Не удалось отредактировать сообщение: {e}")
+        
+        if len(message_text) > 4096:
+            sent_message = await update.message.reply_document(
+                document=open(PLAYERS_LIST_FILE, 'rb'),
+                filename='guild_players.txt',
+                caption="📊 Список игроков гильдии"
+            )
+        else:
+            sent_message = await update.message.reply_text(message_text, parse_mode='Markdown')
+            save_last_guild_message(current_chat_id, sent_message.message_id)
     
     logger.info(f"Список игроков отправлен пользователю @{update.effective_user.username}")
 
@@ -451,14 +862,11 @@ async def add_nickname_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
         return
     
-    # Получаем полный текст команды
     full_text = update.message.text
     
-    # Убираем команду "/add "
     if full_text.startswith('/add '):
         full_text = full_text[5:]
     
-    # Ищем разделитель " - "
     separator = ' - '
     if separator not in full_text:
         await update.message.reply_text(
@@ -468,7 +876,6 @@ async def add_nickname_command(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
     
-    # Разделяем на имя и username
     parts = full_text.split(separator, 1)
     if len(parts) != 2:
         await update.message.reply_text(
@@ -481,21 +888,17 @@ async def add_nickname_command(update: Update, context: ContextTypes.DEFAULT_TYP
     player_name = parts[0].strip()
     telegram_username = parts[1].strip()
     
-    # Очищаем username от @
     if telegram_username.startswith('@'):
         telegram_username = telegram_username[1:]
     
-    # Проверяем, что имя игрока не пустое
     if not player_name:
         await update.message.reply_text("❌ Укажите имя игрока.")
         return
     
-    # Проверяем, что username не пустой
     if not telegram_username:
         await update.message.reply_text("❌ Укажите Telegram username.")
         return
     
-    # Проверяем, существует ли игрок в гильдии
     result = parse_guild_data()
     if 'error' in result:
         await update.message.reply_text(f"❌ {result['error']}")
@@ -505,7 +908,6 @@ async def add_nickname_command(update: Update, context: ContextTypes.DEFAULT_TYP
     player_exists = any(p['player_name'] == player_name for p in players)
     
     if not player_exists:
-        # Показываем похожие имена для подсказки
         similar_names = [p['player_name'] for p in players if player_name.lower() in p['player_name'].lower()][:5]
         if similar_names:
             hint = "\n\n💡 Возможно, вы имели в виду:\n" + "\n".join([f"• {name}" for name in similar_names])
@@ -518,10 +920,8 @@ async def add_nickname_command(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
     
-    # Добавляем привязку
     add_nickname(player_name, telegram_username)
     
-    # Форматируем GP игрока
     player_gp = next(p['galactic_power'] for p in players if p['player_name'] == player_name)
     formatted_gp = f"{player_gp:,}".replace(',', ' ')
     
@@ -529,6 +929,8 @@ async def add_nickname_command(update: Update, context: ContextTypes.DEFAULT_TYP
         f"✅ Игрок \"{player_name}\" (GP: {formatted_gp}) привязан к @{telegram_username}\n\n"
         f"Теперь в списке гильдии он будет отображаться в категории 'Воины Мандалора'"
     )
+    
+    await get_guild(update, context)
     
     logger.info(f"Админ @{username} добавил привязку \"{player_name}\" -> @{telegram_username}")
 
@@ -539,10 +941,8 @@ async def remove_nickname_command(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
         return
     
-    # Получаем полный текст команды
     full_text = update.message.text
     
-    # Убираем команду "/remove "
     if full_text.startswith('/remove '):
         player_name = full_text[8:].strip()
     else:
@@ -555,10 +955,8 @@ async def remove_nickname_command(update: Update, context: ContextTypes.DEFAULT_
         )
         return
     
-    # Проверяем, есть ли привязка
     current_nickname = get_nickname(player_name)
     if not current_nickname:
-        # Показываем похожие имена для подсказки
         all_nicknames = load_json_file(NICKNAMES_FILE, {})
         similar_names = [name for name in all_nicknames.keys() if player_name.lower() in name.lower()][:5]
         
@@ -573,13 +971,14 @@ async def remove_nickname_command(update: Update, context: ContextTypes.DEFAULT_
         )
         return
     
-    # Удаляем привязку
     remove_nickname(player_name)
     
     await update.message.reply_text(
         f"✅ Привязка игрока \"{player_name}\" к @{current_nickname} удалена.\n"
         f"Теперь он будет отображаться в списке 'Неизвестные воины'"
     )
+    
+    await get_guild(update, context)
     
     logger.info(f"Админ @{username} удалил привязку \"{player_name}\"")
 
@@ -590,7 +989,6 @@ async def role_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
         return
     
-    # Получаем имя игрока
     full_text = update.message.text
     if full_text.startswith('/role '):
         player_name = full_text[6:].strip()
@@ -604,7 +1002,6 @@ async def role_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
     
-    # Проверяем, существует ли игрок в гильдии
     result = parse_guild_data()
     if 'error' in result:
         await update.message.reply_text(f"❌ {result['error']}")
@@ -626,7 +1023,6 @@ async def role_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
     
-    # Создаем кнопки для выбора роли
     keyboard = [
         [InlineKeyboardButton("👑 Манд'алор", callback_data=f"role_mandalor_{player_name}")],
         [InlineKeyboardButton("⚔️ Офицеры", callback_data=f"role_officer_{player_name}")],
@@ -655,14 +1051,12 @@ async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("📋 Список админов пуст.")
         return
     
-    # Формируем список админов
     admin_list = []
     for admin in admins:
         admin_list.append(f"• @{admin}")
     
     message_text = "👥 Админы бота:\n\n" + "\n".join(admin_list)
     
-    # Кнопки для добавления/удаления админов (доступны всем админам)
     keyboard = []
     if is_admin(username):
         keyboard.append([InlineKeyboardButton("➕ Добавить админа", callback_data="add_admin")])
@@ -744,7 +1138,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     username = update.effective_user.username
     
-    # Обработка кнопок ролей
     if query.data.startswith("role_"):
         if not username or not is_admin(username):
             await query.edit_message_text("❌ У вас нет прав для назначения ролей.")
@@ -779,8 +1172,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 parse_mode='Markdown'
             )
             logger.info(f"Админ @{username} сбросил роль игрока {player_name}")
+        
+        fake_update = update
+        await get_guild(fake_update, context)
     
-    # Обработка кнопок админов
     elif query.data == "add_admin":
         if not username or not is_admin(username):
             await query.edit_message_text("❌ У вас нет прав для добавления админов.")
@@ -806,30 +1201,28 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 # ========== Запуск бота ==========
 def main() -> None:
-    # ВАЖНО: замените на ваш новый токен после отзыва старого!
     TOKEN = "8295503667:AAEHfdeLyL158BE1qcRTLCpp0ya5BbzSFe4"
     
-    # Инициализируем данные с главным админом
     if not os.path.exists(ADMINS_FILE):
         save_json_file(ADMINS_FILE, ["KuBiK90"])
         logger.info("Создан файл админов с главным админом @KuBiK90")
     
     application = Application.builder().token(TOKEN).build()
     
-    # Регистрируем команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("update", update_data))
     application.add_handler(CommandHandler("guild", get_guild))
     application.add_handler(CommandHandler("guild_full", get_guild_full))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("stats_arena", stats_arena_command))
+    application.add_handler(CommandHandler("stats_dynamic", stats_dynamic_command))
     application.add_handler(CommandHandler("add", add_nickname_command))
     application.add_handler(CommandHandler("remove", remove_nickname_command))
     application.add_handler(CommandHandler("role", role_command))
     application.add_handler(CommandHandler("admins", admins_command))
     application.add_handler(CommandHandler("add_admin", add_admin_command))
     application.add_handler(CommandHandler("remove_admin", remove_admin_command))
-    
-    # Обработчик кнопок
     application.add_handler(CallbackQueryHandler(button_callback))
     
     logger.info("Бот запущен и готов к работе")
