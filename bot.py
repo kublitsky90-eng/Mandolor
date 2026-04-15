@@ -11,6 +11,128 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from typing import List, Optional
+from config import *
+
+scheduler = None
+bot_application = None
+
+async def auto_update_data(context: Optional[ContextTypes.DEFAULT_TYPE] = None):
+    """Автоматическое обновление данных"""
+    logger.info("🔄 Запущено автоматическое обновление данных")
+    
+    if NOTIFY_ON_AUTO_UPDATE:
+        await notify_admins("🔄 Начинаю автоматическое обновление данных гильдии...")
+    
+    try:
+        success, info = download_and_save_json()
+        
+        if success:
+            result = parse_guild_data()
+            if 'success' in result:
+                save_gp_history(result)
+            
+            message = (
+                f"✅ **Автоматическое обновление выполнено!**\n"
+                f"📊 {info}\n"
+                f"🕒 Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            
+            if NOTIFY_ON_AUTO_UPDATE:
+                await notify_admins(message)
+            
+            # Обновляем сообщение гильдии, ТОЛЬКО если есть context
+            if context and context.bot:
+                await update_guild_message_auto(context)
+            
+            logger.info("✅ Автоматическое обновление успешно завершено")
+        else:
+            error_msg = f"❌ **Ошибка авто-обновления**\nПричина: {info}"
+            logger.error(error_msg)
+            if NOTIFY_ON_ERROR:
+                await notify_admins(error_msg)
+                
+    except Exception as e:
+        error_msg = f"❌ **Критическая ошибка авто-обновления**\n{str(e)}"
+        logger.error(error_msg)
+        if NOTIFY_ON_ERROR:
+            await notify_admins(error_msg)
+
+async def notify_admins(message: str, parse_mode: str = 'Markdown'):
+    """Отправляет уведомление всем админам в указанный чат"""
+    global bot_application
+    
+    if not bot_application:
+        logger.error("Application не инициализирован")
+        return
+    
+    if NOTIFY_CHAT_ID:
+        try:
+            await bot_application.bot.send_message(
+                chat_id=NOTIFY_CHAT_ID,
+                text=message,
+                parse_mode=parse_mode
+            )
+            logger.info(f"Уведомление отправлено в чат {NOTIFY_CHAT_ID}")
+        except Exception as e:
+            logger.error(f"Не удалось отправить уведомление: {e}")
+    else:
+        # Отправка каждому админу (требуются user_id, а не username)
+        logger.info(f"Уведомление: {message[:100]}")
+
+async def update_guild_message_auto(context: ContextTypes.DEFAULT_TYPE):
+    """Автоматически обновляет сообщение с гильдией"""
+    last_msg = get_last_guild_message()
+    if not last_msg:
+        return
+    
+    message_text = format_guild_list()
+    if message_text.startswith("❌"):
+        return
+    
+    try:
+        await context.bot.edit_message_text(
+            chat_id=last_msg['chat_id'],
+            message_id=last_msg['message_id'],
+            text=message_text,
+            parse_mode='Markdown'
+        )
+        logger.info("Сообщение гильдии автоматически обновлено")
+    except Exception as e:
+        logger.warning(f"Не удалось автоматически обновить сообщение: {e}")
+
+def setup_scheduler(application):
+    """Настраивает планировщик задач"""
+    global scheduler
+    
+    if not AUTO_UPDATE_ENABLED:
+        logger.info("Автоматическое обновление отключено в конфигурации")
+        return
+    
+    scheduler = AsyncIOScheduler(timezone='UTC')  # Укажите свою временную зону
+    
+    # Способ 1: Ежедневно в определенное время
+    hour, minute = map(int, AUTO_UPDATE_TIME.split(':'))
+    scheduler.add_job(
+        auto_update_data,
+        CronTrigger(hour=hour, minute=minute),
+        args=[],  
+        id='daily_update',
+        name='Ежедневное обновление данных гильдии',
+        replace_existing=True
+    )
+    
+    # Способ 2: Через равные интервалы (например, каждые 24 часа)
+    # scheduler.add_job(
+    #     auto_update_data,
+    #     IntervalTrigger(hours=AUTO_UPDATE_INTERVAL_HOURS),
+    #     args=[None],
+    #     id='interval_update',
+    #     name='Интервальное обновление данных гильдии',
+    #     replace_existing=True
+    # )
+    
+    scheduler.start()
+    logger.info(f"Планировщик запущен. Авто-обновление в {AUTO_UPDATE_TIME} UTC")
 
 # Настройка логирования
 logging.basicConfig(
@@ -479,25 +601,34 @@ def calculate_arena_stats():
     league_stats = defaultdict(int)
     division_stats = defaultdict(int)
     
+    # Создаем словарь для быстрого поиска игроков
+    players_dict = {}
+    for member in guild_data.get('data', {}).get('members', []):
+        players_dict[member.get('player_name')] = member
+    
     for player in players:
-        player_data = None
-        for member in guild_data.get('data', {}).get('members', []):
-            if member.get('player_name') == player['player_name']:
-                player_data = member
-                break
+        player_name = player['player_name']
+        player_data = players_dict.get(player_name, {})
         
-        if player_data:
-            grand_arena = player_data.get('grand_arena', {})
-            if grand_arena:
-                league = grand_arena.get('league', {}).get('name', 'Unknown')
-                division = grand_arena.get('division', 'Unknown')
-                
-                if league in LEAGUE_NAMES:
-                    league_stats[LEAGUE_NAMES[league]] += 1
-                else:
-                    league_stats[league] += 1
-                
-                division_stats[division] += 1
+        # Пробуем разные возможные пути к данным арены
+        grand_arena = player_data.get('grand_arena', {})
+        if not grand_arena:
+            # Возможно данные в другом месте
+            grand_arena = player_data.get('arena', {}).get('grand_arena', {})
+        
+        if grand_arena:
+            league = grand_arena.get('league', {})
+            if isinstance(league, dict):
+                league_name = league.get('name', 'Unknown')
+            else:
+                league_name = str(league) if league else 'Unknown'
+            
+            division = grand_arena.get('division', 'Unknown')
+            
+            if league_name in LEAGUE_NAMES:
+                league_stats[LEAGUE_NAMES[league_name]] += 1
+            elif league_name != 'Unknown':
+                league_stats[league_name] += 1
     
     return {
         'guild_name': result['guild_name'],
@@ -670,22 +801,21 @@ async def stats_arena_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     message += f"🏰 *{escape_markdown(stats['guild_name'])}*\n"
     message += f"━━━━━━━━━━━━━━━━━━━━━\n\n"
     
-    if stats['league_stats']:
+    if stats.get('league_stats'):
         message += f"🏆 *Распределение по лигам:*\n"
         for league, count in sorted(stats['league_stats'].items(), key=lambda x: x[1], reverse=True):
             percentage = count * 100 // stats['member_count']
-            bar = '█' * (percentage // 5)
+            bar = '█' * (percentage // 5) if percentage >= 5 else ''
             message += f"{league}: {count} ({percentage}%) {bar}\n"
     else:
-        message += f"❌ Данные о лигах не найдены в API.\n"
-        message += f"Возможно, структура данных изменилась.\n\n"
+        message += f"❌ Данные о лигах не найдены.\n"
     
-    if stats['division_stats']:
+    if stats.get('division_stats'):
         message += f"\n📊 *Распределение по дивизионам:*\n"
         for division, count in sorted(stats['division_stats'].items()):
             message += f"• Дивизион {division}: {count}\n"
     
-    message += f"\n🕒 Данные от: {stats['last_sync']}"
+    message += f"\n🕒 Данные от: {stats.get('last_sync', 'Неизвестно')}"
     
     await update.message.reply_text(message, parse_mode='Markdown')
 
@@ -1136,6 +1266,113 @@ async def remove_admin_command(update: Update, context: ContextTypes.DEFAULT_TYP
     else:
         await update.message.reply_text(f"❌ Пользователь @{admin_to_remove} не является админом.")
 
+async def auto_update_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает статус авто-обновления"""
+    username = update.effective_user.username
+    if not username or not is_admin(username):
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+        return
+    
+    status_text = (
+        f"🤖 **Статус автоматического обновления**\n\n"
+        f"Состояние: {'✅ Включено' if AUTO_UPDATE_ENABLED else '❌ Выключено'}\n"
+        f"Время обновления: {AUTO_UPDATE_TIME} UTC\n"
+        f"Уведомления админам: {'✅ Да' if NOTIFY_ON_AUTO_UPDATE else '❌ Нет'}\n"
+        f"Уведомления об ошибках: {'✅ Да' if NOTIFY_ON_ERROR else '❌ Нет'}\n\n"
+        f"📝 Команды:\n"
+        f"/toggle_auto_update - Вкл/Выкл авто-обновление\n"
+        f"/set_update_time 08:00 - Установить время обновления\n"
+        f"/update - Ручное обновление"
+    )
+    
+    await update.message.reply_text(status_text, parse_mode='Markdown')
+
+async def toggle_auto_update_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Включает/выключает авто-обновление"""
+    username = update.effective_user.username
+    if not username or not is_admin(username):
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+        return
+    
+    global AUTO_UPDATE_ENABLED, scheduler
+    
+    AUTO_UPDATE_ENABLED = not AUTO_UPDATE_ENABLED
+    
+    if AUTO_UPDATE_ENABLED:
+        # Перезапускаем планировщик
+        if scheduler:
+            scheduler.resume()
+        await update.message.reply_text(
+            f"✅ Автоматическое обновление **включено**\n"
+            f"Время обновления: {AUTO_UPDATE_TIME} UTC"
+        )
+    else:
+        # Останавливаем планировщик
+        if scheduler:
+            scheduler.pause()
+        await update.message.reply_text("❌ Автоматическое обновление **выключено**")
+    
+    # Сохраняем настройку в файл
+    save_json_file('data/auto_update_config.json', {
+        'enabled': AUTO_UPDATE_ENABLED,
+        'update_time': AUTO_UPDATE_TIME
+    })
+
+async def set_update_time_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Устанавливает время автоматического обновления"""
+    username = update.effective_user.username
+    if not username or not is_admin(username):
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажите время в формате HH:MM (UTC)\n"
+            "Пример: /set_update_time 08:00"
+        )
+        return
+    
+    time_str = context.args[0]
+    try:
+        hour, minute = map(int, time_str.split(':'))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError
+        
+        # Обновляем глобальную настройку
+        global AUTO_UPDATE_TIME, scheduler
+        
+        AUTO_UPDATE_TIME = time_str
+        
+        # Перезапускаем задачу с новым временем
+        if scheduler:
+            scheduler.remove_job('daily_update')
+            scheduler.add_job(
+                auto_update_data,
+                CronTrigger(hour=hour, minute=minute),
+                args=[],
+                id='daily_update',
+                name='Ежедневное обновление данных гильдии',
+                replace_existing=True
+            )
+        
+        # Сохраняем настройку
+        save_json_file('data/auto_update_config.json', {
+            'enabled': AUTO_UPDATE_ENABLED,
+            'update_time': AUTO_UPDATE_TIME
+        })
+        
+        await update.message.reply_text(
+            f"✅ Время автоматического обновления установлено на **{time_str} UTC**\n"
+            f"Обновления будут происходить ежедневно в это время."
+        )
+        
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Неверный формат времени.\n"
+            "Используйте: /set_update_time 08:00\n"
+            "Часы: 00-23, минуты: 00-59"
+        )
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка нажатий на кнопки"""
     query = update.callback_query
@@ -1203,6 +1440,30 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "Пример: /remove_admin @Alexey_B_B\n\n"
             "Используйте команду прямо в чате."
         )
+        
+async def post_init(application: Application):
+    """Запускается после инициализации приложения, когда event loop уже работает"""
+    global bot_application, scheduler
+    bot_application = application
+    
+    # Настройка планировщика ТОЛЬКО здесь, когда event loop запущен
+    if AUTO_UPDATE_ENABLED:
+        scheduler = AsyncIOScheduler(timezone='UTC')
+        
+        hour, minute = map(int, AUTO_UPDATE_TIME.split(':'))
+        scheduler.add_job(
+            auto_update_data,
+            CronTrigger(hour=hour, minute=minute),
+            args=[],  # Не передаем context
+            id='daily_update',
+            name='Ежедневное обновление данных гильдии',
+            replace_existing=True
+        )
+        
+        scheduler.start()
+        logger.info(f"Планировщик запущен. Авто-обновление в {AUTO_UPDATE_TIME} UTC")
+    else:
+        logger.info("Автоматическое обновление отключено в конфигурации")
 
 # ========== Запуск бота ==========
 def main() -> None:
@@ -1214,25 +1475,40 @@ def main() -> None:
     
     application = Application.builder().token(TOKEN).build()
     
+    # Базовые команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("update", update_data))
     application.add_handler(CommandHandler("guild", get_guild))
     application.add_handler(CommandHandler("guild_full", get_guild_full))
+    # Статистика
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("stats_arena", stats_arena_command))
     application.add_handler(CommandHandler("stats_dynamic", stats_dynamic_command))
+    # Управление игроками
     application.add_handler(CommandHandler("add", add_nickname_command))
     application.add_handler(CommandHandler("remove", remove_nickname_command))
     application.add_handler(CommandHandler("role", role_command))
+    # Администрирование
     application.add_handler(CommandHandler("admins", admins_command))
     application.add_handler(CommandHandler("add_admin", add_admin_command))
     application.add_handler(CommandHandler("remove_admin", remove_admin_command))
     application.add_handler(CallbackQueryHandler(button_callback))
+    # Авто-обновление
+    application.add_handler(CommandHandler("auto_update_status", auto_update_status_command))
+    application.add_handler(CommandHandler("toggle_auto_update", toggle_auto_update_command))
+    application.add_handler(CommandHandler("set_update_time", set_update_time_command))
+    
+    application.post_init = post_init
+    
+    global bot_application
+    bot_application = application
     
     logger.info("Бот запущен и готов к работе")
     logger.info("Главный админ: @KuBiK90")
     logger.info("Любой админ может добавлять других админов и назначать роли")
+    logger.info(f"Авто-обновление: {'Включено' if AUTO_UPDATE_ENABLED else 'Выключено'}")
+    logger.info(f"Время обновления: {AUTO_UPDATE_TIME} UTC")
     
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
