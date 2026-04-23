@@ -596,45 +596,31 @@ def calculate_arena_stats():
         return None
     
     players = result['players_raw']
-    guild_data = result.get('guild_data', {})
     
     league_stats = defaultdict(int)
-    division_stats = defaultdict(int)
-    
-    # Создаем словарь для быстрого поиска игроков
-    players_dict = {}
-    for member in guild_data.get('data', {}).get('members', []):
-        players_dict[member.get('player_name')] = member
     
     for player in players:
-        player_name = player['player_name']
-        player_data = players_dict.get(player_name, {})
+        # Данные о лиге находятся прямо на уровне игрока
+        league_name = player.get('league_name', 'Unknown')
         
-        # Пробуем разные возможные пути к данным арены
-        grand_arena = player_data.get('grand_arena', {})
-        if not grand_arena:
-            # Возможно данные в другом месте
-            grand_arena = player_data.get('arena', {}).get('grand_arena', {})
-        
-        if grand_arena:
-            league = grand_arena.get('league', {})
-            if isinstance(league, dict):
-                league_name = league.get('name', 'Unknown')
-            else:
-                league_name = str(league) if league else 'Unknown'
-            
-            division = grand_arena.get('division', 'Unknown')
-            
-            if league_name in LEAGUE_NAMES:
-                league_stats[LEAGUE_NAMES[league_name]] += 1
-            elif league_name != 'Unknown':
-                league_stats[league_name] += 1
+        # Маппинг лиг для красивого отображения
+        if league_name == 'AURODIUM':
+            league_stats["🟡 Ауродиум"] += 1
+        elif league_name == 'CHROMIUM':
+            league_stats["🔵 Хромиум"] += 1
+        elif league_name == 'BRONZIUM':
+            league_stats["🥉 Бронзиум"] += 1
+        elif league_name == 'CARBONITE':
+            league_stats["🪨 Карбонит"] += 1
+        elif league_name == 'KYBER':
+            league_stats["💎 Кайбер"] += 1
+        elif league_name != 'Unknown':
+            league_stats[league_name] += 1
     
     return {
         'guild_name': result['guild_name'],
         'member_count': result['member_count'],
         'league_stats': dict(league_stats),
-        'division_stats': dict(division_stats),
         'last_sync': result.get('last_sync', 'Неизвестно')
     }
 
@@ -671,11 +657,15 @@ def calculate_dynamic_stats():
                 'current_gp': current_gp
             })
     
-    weekly_changes.sort(key=lambda x: x['change'], reverse=True)
-    monthly_changes.sort(key=lambda x: x['change'], reverse=True)
+    # Сортируем для топа и низа
+    weekly_top = sorted(weekly_changes, key=lambda x: x['change'], reverse=True)
+    weekly_bottom = sorted(weekly_changes, key=lambda x: x['change'])
+    
+    monthly_top = sorted(monthly_changes, key=lambda x: x['change'], reverse=True)
+    monthly_bottom = sorted(monthly_changes, key=lambda x: x['change'])
     
     predictions = []
-    for player in weekly_changes[:10]:
+    for player in weekly_top[:10]:
         if player['change'] > 0:
             current_gp = player['current_gp']
             next_million = ((current_gp // 1_000_000) + 1) * 1_000_000
@@ -694,12 +684,152 @@ def calculate_dynamic_stats():
     return {
         'guild_name': result['guild_name'],
         'member_count': result['member_count'],
+        'weekly_top': weekly_top[:5],
+        'weekly_bottom': weekly_bottom[:5],
+        'weekly_changes': weekly_changes, 
+        'monthly_top': monthly_top[:5],
+        'monthly_bottom': monthly_bottom[:5],
+        'monthly_changes': monthly_changes,
+        'predictions': predictions[:5],
+        'last_sync': result.get('last_sync', 'Неизвестно')
+    }
+    
+    return {
+        'guild_name': result['guild_name'],
+        'member_count': result['member_count'],
         'weekly_top': weekly_changes[:5],
         'weekly_bottom': weekly_changes[-5:] if len(weekly_changes) >= 5 else weekly_changes,
         'monthly_top': monthly_changes[:5],
         'predictions': predictions[:5],
         'last_sync': result.get('last_sync', 'Неизвестно')
     }
+    
+async def player_dynamic_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает динамику роста и статистику конкретного игрока"""
+    username = update.effective_user.username
+    
+    # Получаем имя игрока из аргументов
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажите имя игрока.\n"
+            "Пример: /dynamic Just Alex\n"
+            "Имя можно взять из команды /guild"
+        )
+        return
+    
+    player_name = ' '.join(context.args).strip()
+    
+    # Загружаем данные гильдии
+    result = parse_guild_data()
+    if 'error' in result:
+        await update.message.reply_text(f"❌ {result['error']}")
+        return
+    
+    # Ищем игрока
+    players = result['players_raw']
+    player_data = None
+    for p in players:
+        if p['player_name'].lower() == player_name.lower():
+            player_data = p
+            player_name = p['player_name']  # Используем точное имя из данных
+            break
+    
+    if not player_data:
+        # Поиск по частичному совпадению
+        matches = [p['player_name'] for p in players if player_name.lower() in p['player_name'].lower()]
+        if matches:
+            matches_text = "\n".join([f"• {name}" for name in matches[:5]])
+            await update.message.reply_text(
+                f"❌ Игрок \"{player_name}\" не найден.\n\n"
+                f"💡 Возможно, вы имели в виду:\n{matches_text}\n\n"
+                f"Используйте точное имя из команды /guild"
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ Игрок \"{player_name}\" не найден в гильдии.\n"
+                f"Используйте /guild для просмотра списка всех игроков."
+            )
+        return
+    
+    # Получаем данные
+    current_gp = player_data['galactic_power']
+    league_name = player_data.get('league_name', 'Неизвестно')
+    guild_join_time = player_data.get('guild_join_time', 'Неизвестно')
+    
+    # Форматируем дату вступления
+    if guild_join_time != 'Неизвестно':
+        try:
+            join_date = datetime.fromisoformat(guild_join_time.replace('Z', '+00:00'))
+            join_date_str = join_date.strftime('%d.%m.%Y')
+            # Сколько дней в гильдии
+            days_in_guild = (datetime.now() - join_date).days
+            join_info = f"{join_date_str} ({days_in_guild} дней)"
+        except:
+            join_info = guild_join_time
+    else:
+        join_info = "Неизвестно"
+    
+    # Получаем рост GP
+    weekly = get_gp_changes(player_name, 7)
+    monthly = get_gp_changes(player_name, 30)
+    
+    # Маппинг лиг
+    league_display = {
+        'Aurodium': '🟡 Ауродиум',
+        'Chromium': '🔵 Хромиум',
+        'Bronzium': '🥉 Бронзиум',
+        'Carbonite': '🪨 Карбонит',
+        'Kyber': '💎 Кайбер'
+    }.get(league_name, league_name)
+    
+    # Формируем сообщение
+    message = f"📊 *Статистика игрока*\n\n"
+    message += f"👤 *{escape_markdown(player_name)}*\n"
+    message += f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+    
+    # GP
+    formatted_gp = f"{current_gp:,}".replace(',', ' ')
+    message += f"⚔️ *GP:* {formatted_gp}\n"
+    
+    # Рост за неделю
+    if weekly and weekly['change'] != 0:
+        change_millions = weekly['change'] / 1_000_000
+        arrow = "📈" if weekly['change'] > 0 else "📉"
+        message += f"📆 *Рост за неделю:* {arrow} {change_millions:+.2f}M GP\n"
+    elif weekly and weekly['change'] == 0:
+        message += f"📆 *Рост за неделю:* ⚪ 0 GP\n"
+    else:
+        message += f"📆 *Рост за неделю:* ❌ Недостаточно данных\n"
+    
+    # Рост за месяц
+    if monthly and monthly['change'] != 0:
+        change_millions = monthly['change'] / 1_000_000
+        arrow = "📈" if monthly['change'] > 0 else "📉"
+        message += f"📆 *Рост за месяц:* {arrow} {change_millions:+.2f}M GP\n"
+    elif monthly and monthly['change'] == 0:
+        message += f"📆 *Рост за месяц:* ⚪ 0 GP\n"
+    else:
+        message += f"📆 *Рост за месяц:* ❌ Недостаточно данных\n"
+    
+    # Лига
+    message += f"\n🏆 *Лига ВА:* {league_display}\n"
+    
+    # В гильдии с
+    message += f"📅 *В гильдии с:* {join_info}\n"
+    
+    # Привязка к Telegram (если есть)
+    tg_nick = get_nickname(player_name)
+    if tg_nick:
+        message += f"🔗 *Telegram:* @{escape_markdown(tg_nick)}\n"
+    
+    # Роль
+    role = get_role(player_name)
+    if role and role != "Воины Мандалора":
+        message += f"🎭 *Роль:* {role}\n"
+    
+    message += f"\n🕒 Данные от: {result.get('last_sync', 'Неизвестно')}"
+    
+    await update.message.reply_text(message, parse_mode='Markdown')
 
 # ========== Команды бота ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -803,19 +933,23 @@ async def stats_arena_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     if stats.get('league_stats'):
         message += f"🏆 *Распределение по лигам:*\n"
+        # Сортируем лиги по убыванию количества игроков
         for league, count in sorted(stats['league_stats'].items(), key=lambda x: x[1], reverse=True):
             percentage = count * 100 // stats['member_count']
-            bar = '█' * (percentage // 5) if percentage >= 5 else ''
+            # Создаем простую визуализацию (каждый блок = 5%)
+            bar_length = percentage // 5
+            bar = '█' * bar_length if bar_length > 0 else '▏'
             message += f"{league}: {count} ({percentage}%) {bar}\n"
+        
+        # Добавляем итог
+        message += f"\n📊 *Всего игроков с данными о лигах:* {sum(stats['league_stats'].values())}/{stats['member_count']}"
     else:
         message += f"❌ Данные о лигах не найдены.\n"
+        message += f"Возможные причины:\n"
+        message += f"• Нет данных об участниках\n"
+        message += f"• У игроков отсутствует поле league_name\n"
     
-    if stats.get('division_stats'):
-        message += f"\n📊 *Распределение по дивизионам:*\n"
-        for division, count in sorted(stats['division_stats'].items()):
-            message += f"• Дивизион {division}: {count}\n"
-    
-    message += f"\n🕒 Данные от: {stats.get('last_sync', 'Неизвестно')}"
+    message += f"\n\n🕒 Данные от: {stats.get('last_sync', 'Неизвестно')}"
     
     await update.message.reply_text(message, parse_mode='Markdown')
 
@@ -838,12 +972,19 @@ async def stats_dynamic_command(update: Update, context: ContextTypes.DEFAULT_TY
             message += f"{i}. *{escape_markdown(player['name'])}* +{change_millions:.2f}M GP\n"
         message += "\n"
     
-    if stats['weekly_bottom'] and stats['weekly_bottom'][0]['change'] < 0:
-        message += f"📉 *Аутсайдеры по росту GP (неделя):*\n"
-        for i, player in enumerate(stats['weekly_bottom'][:3], 1):
-            change_millions = player['change'] / 1_000_000
-            message += f"{i}. *{escape_markdown(player['name'])}* {change_millions:.2f}M GP\n"
-        message += "\n"
+    if len(stats.get('weekly_changes', [])) >= 3:  # Показываем если есть хотя бы 3 игрока
+        weekly_bottom = sorted(stats['weekly_changes'], key=lambda x: x['change'])[:5]
+        if weekly_bottom:
+            message += f"🐌 *Самый медленный рост за неделю:*\n"
+            for i, player in enumerate(weekly_bottom[:5], 1):
+                change_millions = player['change'] / 1_000_000
+                if player['change'] < 0:
+                    message += f"{i}. *{escape_markdown(player['name'])}* {change_millions:.2f}M GP ⚠️\n"
+                elif player['change'] < 100000:  # Меньше 100к GP за неделю
+                    message += f"{i}. *{escape_markdown(player['name'])}* +{change_millions:.2f}M GP 🐢\n"
+                else:
+                    message += f"{i}. *{escape_markdown(player['name'])}* +{change_millions:.2f}M GP\n"
+            message += "\n"
     
     if stats['monthly_top']:
         message += f"🌟 *Топ-5 по росту GP (месяц):*\n"
@@ -851,6 +992,20 @@ async def stats_dynamic_command(update: Update, context: ContextTypes.DEFAULT_TY
             change_millions = player['change'] / 1_000_000
             message += f"{i}. *{escape_markdown(player['name'])}* +{change_millions:.2f}M GP\n"
         message += "\n"
+        
+        if len(stats.get('monthly_changes', [])) >= 3:
+            monthly_bottom = sorted(stats['monthly_changes'], key=lambda x: x['change'])[:5]
+            if monthly_bottom:
+                message += f"🐌 *Самый медленный рост за месяц:*\n"
+                for i, player in enumerate(monthly_bottom[:5], 1):
+                    change_millions = player['change'] / 1_000_000
+                    if player['change'] < 0:
+                        message += f"{i}. *{escape_markdown(player['name'])}* {change_millions:.2f}M GP ⚠️\n"
+                    elif player['change'] < 500000:
+                        message += f"{i}. *{escape_markdown(player['name'])}* +{change_millions:.2f}M GP 🐢\n"
+                    else:
+                        message += f"{i}. *{escape_markdown(player['name'])}* +{change_millions:.2f}M GP\n"
+                message += "\n"
     
     if stats['predictions']:
         message += f"🔮 *Прогноз достижения следующего миллиона:*\n"
@@ -1467,7 +1622,7 @@ async def post_init(application: Application):
 
 # ========== Запуск бота ==========
 def main() -> None:
-    TOKEN = "8295503667:AAEHfdeLyL158BE1qcRTLCpp0ya5BbzSFe4"
+    TOKEN = os.environ.get('BOT_TOKEN')
     
     if not os.path.exists(ADMINS_FILE):
         save_json_file(ADMINS_FILE, ["KuBiK90"])
@@ -1485,6 +1640,7 @@ def main() -> None:
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("stats_arena", stats_arena_command))
     application.add_handler(CommandHandler("stats_dynamic", stats_dynamic_command))
+    application.add_handler(CommandHandler("dynamic", player_dynamic_command))
     # Управление игроками
     application.add_handler(CommandHandler("add", add_nickname_command))
     application.add_handler(CommandHandler("remove", remove_nickname_command))
