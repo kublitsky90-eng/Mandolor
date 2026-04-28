@@ -36,7 +36,7 @@ async def set_bot_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     new_name = ' '.join(context.args).strip()
     
-    token = os.environ.get('BOT_TOKEN')
+    token = os.environ.get('NEW_BOT_TOKEN')
     url = f"https://api.telegram.org/bot{token}/setMyName"
     
     try:
