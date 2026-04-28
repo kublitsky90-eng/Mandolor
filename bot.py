@@ -12,6 +12,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from typing import List, Optional
 from config import *
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -1666,8 +1667,7 @@ async def post_init(application: Application):
 def main() -> None:
     load_dotenv()
     # Теперь можно получить токен
-    TOKEN = os.getenv('BOT_TOKEN')
-    #TOKEN = os.environ.get('BOT_TOKEN')
+    TOKEN = os.getenv('NEW_BOT_TOKEN')
     
     if not os.path.exists(ADMINS_FILE):
         save_json_file(ADMINS_FILE, ["KuBiK90"])
