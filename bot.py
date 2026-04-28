@@ -12,9 +12,51 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from typing import List, Optional
 from config import *
+from dotenv import load_dotenv
+load_dotenv()
 
 scheduler = None
 bot_application = None
+
+async def set_bot_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Изменяет имя бота (только для админов)"""
+    username = update.effective_user.username
+    if not username or not is_admin(username):
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+        return
+    
+    # Проверяем, передано ли новое имя
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажите новое имя бота.\n"
+            "Пример: /setbotname Супер Бот"
+        )
+        return
+    
+    new_name = ' '.join(context.args).strip()
+    
+    token = os.environ.get('BOT_TOKEN')
+    url = f"https://api.telegram.org/bot{token}/setMyName"
+    
+    try:
+        response = requests.post(url, json={"name": new_name})
+        result = response.json()
+        
+        if result.get("ok"):
+            await update.message.reply_text(
+                f"✅ Имя бота успешно изменено на:\n"
+                f"*{escape_markdown(new_name)}*\n\n"
+                f"⚠️ Изменение может занять несколько минут, "
+                f"чтобы отобразиться во всех интерфейсах Telegram.",
+                parse_mode='Markdown'
+            )
+            logger.info(f"Админ @{username} изменил имя бота на '{new_name}'")
+        else:
+            error_msg = result.get('description', 'Неизвестная ошибка')
+            await update.message.reply_text(f"❌ Ошибка: {error_msg}")
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка запроса: {str(e)}")
 
 async def auto_update_data(context: Optional[ContextTypes.DEFAULT_TYPE] = None):
     """Автоматическое обновление данных"""
@@ -1633,6 +1675,7 @@ def main() -> None:
     # Базовые команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("setbotname", set_bot_name))
     application.add_handler(CommandHandler("update", update_data))
     application.add_handler(CommandHandler("guild", get_guild))
     application.add_handler(CommandHandler("guild_full", get_guild_full))
