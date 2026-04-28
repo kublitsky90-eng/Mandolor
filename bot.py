@@ -1664,7 +1664,10 @@ async def post_init(application: Application):
 
 # ========== Запуск бота ==========
 def main() -> None:
-    TOKEN = os.environ.get('BOT_TOKEN')
+    load_dotenv()
+    # Теперь можно получить токен
+    TOKEN = os.getenv('BOT_TOKEN')
+    #TOKEN = os.environ.get('BOT_TOKEN')
     
     if not os.path.exists(ADMINS_FILE):
         save_json_file(ADMINS_FILE, ["KuBiK90"])
