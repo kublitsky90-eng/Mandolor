@@ -1,3 +1,5 @@
+# guild.py - исправленная версия
+
 import os
 from datetime import datetime
 from telegram import Update
@@ -35,6 +37,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Убираем квадратные скобки и используем безопасное форматирование
     await update.message.reply_text(
         "📋 *Доступные команды:*\n\n"
         "/start - Приветственное сообщение\n"
@@ -80,12 +83,12 @@ async def commands_list_command(update: Update, context: ContextTypes.DEFAULT_TY
         "/stats - Общая статистика гильдии\n"
         "/stats_arena - Статистика по Великой Арене\n"
         "/stats_dynamic - Динамика роста игроков\n"
-        "/dynamic [имя] - Статистика конкретного игрока\n\n"
+        "/dynamic \\[имя\\] - Статистика конкретного игрока\n\n"  # Экранируем квадратные скобки
         
         "*👑 Админ-команды:*\n"
-        "/add [ник] - @[username] - Привязать Telegram к игроку\n"
-        "/remove [ник] - Удалить привязку Telegram\n"
-        "/role [ник] - Назначить роль игроку\n"
+        "/add \\[ник\\] - @\\[username\\] - Привязать Telegram к игроку\n"
+        "/remove \\[ник\\] - Удалить привязку Telegram\n"
+        "/role \\[ник\\] - Назначить роль игроку\n"
         "/admins - Показать список админов\n"
         "/add_admin @username - Добавить админа\n"
         "/remove_admin @username - Удалить админа\n\n"
