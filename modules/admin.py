@@ -9,7 +9,7 @@ from .utils import (
     logger, escape_markdown, load_json_file, save_json_file,
     ADMINS_FILE, NICKNAMES_FILE, ROLES_FILE, JSON_FILE_PATH
 )
-from .data_handlers import parse_guild_data, download_and_save_json, save_gp_history
+from .data_handlers import parse_guild_data, download_and_save_json
 from .guild import get_guild
 
 # ========== Функции для работы с админами ==========
@@ -119,6 +119,8 @@ async def update_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if success:
         result = parse_guild_data()
         if 'success' in result:
+            # Импортируем save_gp_history здесь, чтобы избежать циклического импорта
+            from .stats import save_gp_history
             save_gp_history(result)
         
         await message.edit_text(
