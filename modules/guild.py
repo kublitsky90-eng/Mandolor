@@ -23,6 +23,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/remove ник игрока - Удалить привязку Telegram\n"
         "/role ник игрока - Назначить роль игроку\n"
         "/admins - Показать список админов\n"
+        "/commands - Показать все доступные команды\n"
         "/help - Показать это сообщение\n\n"
         "📝 *Примеры:*\n"
         "/add Qbik - @KuBiK90\n"
@@ -47,6 +48,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/remove ник игрока - Удалить привязку Telegram\n"
         "/role ник игрока - Назначить роль игроку\n"
         "/admins - Показать список админов\n"
+        "/commands - Показать все доступные команды\n"
         "/help - Показать это сообщение\n\n"
         "📝 *Примеры:*\n"
         "/add Qbik - @KuBiK90\n"
@@ -59,6 +61,47 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• Воины Мандалора - игроки с привязкой к Telegram\n"
         "• Неизвестные воины - игроки без привязки\n\n"
         "👑 *Админы:* Любой админ может добавлять других админов.",
+        parse_mode='Markdown'
+    )
+
+async def commands_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает список всех доступных команд"""
+    await update.message.reply_text(
+        "📋 *Список всех команд бота:*\n\n"
+        "*📊 Основные команды:*\n"
+        "/commands - Показать этот список\n\n"
+        
+        "*📁 Данные гильдии:*\n"
+        "/update - Скачать свежие данные с swgoh.gg\n"
+        "/guild - Показать список игроков гильдии\n"
+        "/guild_full - Получить полные данные (JSON-файл)\n\n"
+        
+        "*📈 Статистика:*\n"
+        "/stats - Общая статистика гильдии\n"
+        "/stats_arena - Статистика по Великой Арене\n"
+        "/stats_dynamic - Динамика роста игроков\n"
+        "/dynamic [имя] - Статистика конкретного игрока\n\n"
+        
+        "*👑 Админ-команды:*\n"
+        "/add [ник] - @[username] - Привязать Telegram к игроку\n"
+        "/remove [ник] - Удалить привязку Telegram\n"
+        "/role [ник] - Назначить роль игроку\n"
+        "/admins - Показать список админов\n"
+        "/add_admin @username - Добавить админа\n"
+        "/remove_admin @username - Удалить админа\n\n"
+        
+        "*⚙️ Настройки авто-обновления:*\n"
+        "/auto_update_status - Статус авто-обновления\n"
+        "/toggle_auto_update - Вкл/Выкл авто-обновление\n"
+        "/set_update_time HH:MM - Установить время обновления\n\n"
+        
+        "📝 *Примеры использования:*\n"
+        "`/add Just Alex - @Alexey_B_B`\n"
+        "`/role Just Alex`\n"
+        "`/dynamic Just Alex`\n"
+        "`/set_update_time 08:00`\n\n"
+        
+        "💡 *Совет:* Имена с пробелами пишите без кавычек, просто через пробел.",
         parse_mode='Markdown'
     )
 
