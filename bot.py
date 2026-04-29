@@ -20,6 +20,7 @@ from modules.stats import (
 from modules.guild import start, help_command, get_guild, commands_list_command
 from modules.scheduler import setup_scheduler, post_init, auto_update_data
 from modules.utils import load_json_file, save_json_file, logger, DATA_FOLDER, ADMINS_FILE
+from modules.guild_characters import unit_command, unit_info_command
 
 load_dotenv()
 
@@ -46,6 +47,10 @@ def main() -> None:
     application.add_handler(CommandHandler("stats_arena", stats_arena_command))
     application.add_handler(CommandHandler("stats_dynamic", stats_dynamic_command))
     application.add_handler(CommandHandler("dynamic", player_dynamic_command))
+    
+    # Поиск персонажей
+    application.add_handler(CommandHandler("unit", unit_command))
+    application.add_handler(CommandHandler("unit_info", unit_info_command))
     
     # Управление игроками (админские)
     application.add_handler(CommandHandler("add", add_nickname_command))
