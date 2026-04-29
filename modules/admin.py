@@ -7,13 +7,20 @@ from telegram.ext import ContextTypes
 from config import NOTIFY_CHAT_ID
 from .utils import (
     logger, escape_markdown, load_json_file, save_json_file,
-    is_admin, add_nickname, remove_nickname, get_nickname, set_role, get_role, remove_role,
-    parse_guild_data, download_and_save_json, save_gp_history,
-    JSON_FILE_PATH, ADMINS_FILE, NICKNAMES_FILE
+    ADMINS_FILE, NICKNAMES_FILE, ROLES_FILE, JSON_FILE_PATH
 )
+from .data_handlers import parse_guild_data, download_and_save_json, save_gp_history
 from .guild import get_guild
 
 # ========== Функции для работы с админами ==========
+def normalize_username(username):
+    """Убирает @ в начале, если есть, но сохраняет регистр"""
+    if not username:
+        return None
+    if username.startswith('@'):
+        username = username[1:]
+    return username
+
 def is_admin(username):
     """Проверяет, является ли пользователь админом по username (точное сравнение)"""
     if not username:
@@ -25,14 +32,6 @@ def is_admin(username):
     
     admins = load_json_file(ADMINS_FILE, [])
     return normalized_username in admins
-
-def normalize_username(username):
-    """Убирает @ в начале, если есть, но сохраняет регистр"""
-    if not username:
-        return None
-    if username.startswith('@'):
-        username = username[1:]
-    return username
 
 def add_admin(username):
     """Добавляет админа по username (сохраняет исходный регистр)"""
@@ -489,7 +488,6 @@ async def toggle_auto_update_command(update: Update, context: ContextTypes.DEFAU
             scheduler.pause()
         await update.message.reply_text("❌ Автоматическое обновление **выключено**")
     
-    from .utils import save_json_file
     save_json_file('data/auto_update_config.json', {
         'enabled': config.AUTO_UPDATE_ENABLED,
         'update_time': config.AUTO_UPDATE_TIME
@@ -522,7 +520,6 @@ async def set_update_time_command(update: Update, context: ContextTypes.DEFAULT_
         
         reschedule_daily_update(hour, minute)
         
-        from .utils import save_json_file
         save_json_file('data/auto_update_config.json', {
             'enabled': config.AUTO_UPDATE_ENABLED,
             'update_time': config.AUTO_UPDATE_TIME
@@ -582,8 +579,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             logger.info(f"Админ @{username} сбросил роль игрока {player_name}")
         
-        fake_update = update
-        await get_guild(fake_update, context)
+        await get_guild(update, context)
     
     elif query.data == "add_admin":
         if not username or not is_admin(username):

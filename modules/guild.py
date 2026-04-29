@@ -1,4 +1,3 @@
-import json
 import os
 from datetime import datetime
 from telegram import Update
@@ -6,8 +5,9 @@ from telegram.ext import ContextTypes
 
 from .utils import (
     logger, escape_markdown, get_last_guild_message, save_last_guild_message,
-    parse_guild_data, format_guild_list, PLAYERS_LIST_FILE
+    PLAYERS_LIST_FILE
 )
+from .data_handlers import parse_guild_data, format_guild_list
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
