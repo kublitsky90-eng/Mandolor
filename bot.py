@@ -17,7 +17,7 @@ from modules.stats import (
     stats_command, stats_arena_command, stats_dynamic_command,
     player_dynamic_command
 )
-from modules.guild import start, help_command, get_guild
+from modules.guild import start, help_command, get_guild, commands_list_command
 from modules.scheduler import setup_scheduler, post_init, auto_update_data
 from modules.utils import load_json_file, save_json_file, logger, DATA_FOLDER, ADMINS_FILE
 
@@ -36,6 +36,7 @@ def main() -> None:
     # Базовые команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("commands", commands_list_command))
     application.add_handler(CommandHandler("update", update_data))
     application.add_handler(CommandHandler("guild", get_guild))
     application.add_handler(CommandHandler("guild_full", get_guild_full))
