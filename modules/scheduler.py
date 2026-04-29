@@ -1,11 +1,13 @@
 import os
 from datetime import datetime
+from typing import Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from telegram.ext import ContextTypes
 
 from config import AUTO_UPDATE_ENABLED, AUTO_UPDATE_TIME, NOTIFY_ON_AUTO_UPDATE, NOTIFY_ON_ERROR, NOTIFY_CHAT_ID
-from .utils import logger, download_and_save_json, parse_guild_data, save_gp_history
+from .utils import logger
+from .data_handlers import download_and_save_json, parse_guild_data
 from .guild import format_guild_list, get_last_guild_message
 
 scheduler = None
@@ -76,6 +78,8 @@ async def auto_update_data(context: Optional[ContextTypes.DEFAULT_TYPE] = None):
         if success:
             result = parse_guild_data()
             if 'success' in result:
+                # Импортируем здесь, чтобы избежать циклического импорта
+                from .stats import save_gp_history
                 save_gp_history(result)
             
             message = (
