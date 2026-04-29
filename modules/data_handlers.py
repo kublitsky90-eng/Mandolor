@@ -8,9 +8,6 @@ from .utils import (
     load_json_file, save_json_file, escape_markdown
 )
 
-# Импортируем из admin.py после определения, чтобы избежать циклического импорта
-# Функции get_nickname и get_role будут импортированы позже
-
 # ========== Основные функции обработки данных ==========
 def download_and_save_json() -> tuple[bool, str]:
     """Скачивает JSON с сайта используя заголовки браузера."""
@@ -162,8 +159,3 @@ def format_guild_list():
         message_lines.append(f"\n🕒 Данные от: {result['last_sync']}")
     
     return "\n".join(message_lines)
-
-def save_gp_history(current_data):
-    """Сохраняет историю GP игроков"""
-    from .stats import save_gp_history as stats_save_gp_history
-    return stats_save_gp_history(current_data)
