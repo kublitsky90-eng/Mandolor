@@ -4,16 +4,15 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from .utils import (
-    logger, escape_markdown, get_nickname, get_role,
-    parse_guild_data, save_gp_history, get_gp_changes,
+    logger, escape_markdown, load_json_file, save_json_file,
     HISTORY_FILE
 )
+from .data_handlers import parse_guild_data
+from .admin import get_nickname, get_role
 
 # ========== Функции для работы с историей GP ==========
 def save_gp_history(current_data):
     """Сохраняет историю GP игроков"""
-    from .utils import load_json_file, save_json_file, HISTORY_FILE
-    
     history = load_json_file(HISTORY_FILE, {})
     timestamp = datetime.now().isoformat()
     
@@ -42,8 +41,6 @@ def save_gp_history(current_data):
 
 def get_gp_changes(player_name, days=7):
     """Получает изменение GP игрока за указанное количество дней"""
-    from .utils import load_json_file, HISTORY_FILE
-    
     history = load_json_file(HISTORY_FILE, {})
     if not history or 'snapshots' not in history or len(history['snapshots']) < 2:
         return None
