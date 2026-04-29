@@ -5,9 +5,11 @@ from datetime import datetime
 
 from .utils import (
     logger, GUILD_URL, REQUEST_HEADERS, JSON_FILE_PATH,
-    load_json_file, save_json_file, get_nickname, get_role,
-    NICKNAMES_FILE, ROLES_FILE
+    load_json_file, save_json_file, escape_markdown
 )
+
+# Импортируем из admin.py после определения, чтобы избежать циклического импорта
+# Функции get_nickname и get_role будут импортированы позже
 
 # ========== Основные функции обработки данных ==========
 def download_and_save_json() -> tuple[bool, str]:
@@ -106,6 +108,9 @@ def parse_guild_data() -> dict:
 
 def format_guild_list():
     """Форматирует список игроков с ролями и привязками к Telegram"""
+    # Импортируем здесь, чтобы избежать циклического импорта
+    from .admin import get_nickname, get_role
+    
     result = parse_guild_data()
     
     if 'error' in result:
@@ -158,5 +163,7 @@ def format_guild_list():
     
     return "\n".join(message_lines)
 
-# Импортируем escape_markdown в конце, чтобы избежать циклического импорта
-from .utils import escape_markdown
+def save_gp_history(current_data):
+    """Сохраняет историю GP игроков"""
+    from .stats import save_gp_history as stats_save_gp_history
+    return stats_save_gp_history(current_data)
