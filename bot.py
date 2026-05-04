@@ -5,6 +5,28 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from dotenv import load_dotenv
 
+# ========== ПАТЧ ДЛЯ ИСПРАВЛЕНИЯ ОШИБКИ С PROXIES ==========
+# Этот код нужно запустить ДО импорта любых других модулей telegram
+from telegram.request import HTTPXRequest
+import httpx
+
+# Сохраняем оригинальный метод _build_client
+original_build_client = HTTPXRequest._build_client
+
+def patched_build_client(self):
+    """Патченный метод, который удаляет параметр proxies"""
+    # Получаем копию kwargs
+    client_kwargs = self._client_kwargs.copy()
+    # Удаляем problematic параметры
+    client_kwargs.pop('proxies', None)
+    client_kwargs.pop('proxy', None)
+    # Создаем клиент с исправленными параметрами
+    return httpx.AsyncClient(**client_kwargs)
+
+# Применяем патч
+HTTPXRequest._build_client = patched_build_client
+# ========================================================
+
 from config import *
 from modules.admin import (
     is_admin, add_nickname_command, remove_nickname_command, 
@@ -20,7 +42,7 @@ from modules.stats import (
 from modules.guild import start, help_command, get_guild, commands_list_command
 from modules.scheduler import setup_scheduler, post_init, auto_update_data
 from modules.utils import load_json_file, save_json_file, logger, DATA_FOLDER, ADMINS_FILE
-from modules.guild_characters import unit_command, unit_info_command
+from modules.guild_characters import load_characters_command
 
 load_dotenv()
 
@@ -49,8 +71,7 @@ def main() -> None:
     application.add_handler(CommandHandler("dynamic", player_dynamic_command))
     
     # Поиск персонажей
-    application.add_handler(CommandHandler("unit", unit_command))
-    application.add_handler(CommandHandler("unit_info", unit_info_command))
+    application.add_handler(CommandHandler("load_characters", load_characters_command))
     
     # Управление игроками (админские)
     application.add_handler(CommandHandler("add", add_nickname_command))

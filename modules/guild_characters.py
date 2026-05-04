@@ -1,491 +1,469 @@
+# guild_characters.py
 import json
 import os
-import time
-import asyncio
-import aiohttp
-from typing import Optional, Dict, Any
+from datetime import datetime
+from typing import Optional, List, Dict, Any
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from .utils import (
-    logger, JSON_FILE_PATH, DATA_FOLDER, REQUEST_HEADERS
-)
-from .character_mapping import normalize_character_name
+from .utils import logger, escape_markdown, load_json_file, save_json_file
+from .admin import is_admin
 
+# ========== Настройки Comlink ==========
+COMLINK_URL = "http://185.72.144.142:3200"
 
-# ========== Настройки ==========
-MAX_CONCURRENT_REQUESTS = 3  # Максимум параллельных запросов
-REQUEST_DELAY = 1.5  # Задержка между запросами (секунды)
-MAX_RETRIES = 3  # Максимум повторных попыток
+# Файл для кэширования данных персонажей
+CHARACTERS_CACHE_FILE = os.path.join("data", "characters_cache.json")
+GAME_DATA_CACHE_FILE = os.path.join("data", "game_data_cache.json")
 
+# Глобальные переменные для кэша
+_characters_cache = {}
+_game_data_cache = {}
 
-async def fetch_player_data_async(session: aiohttp.ClientSession, ally_code: int, retry: int = 0) -> Optional[Dict]:
-    """Асинхронная загрузка данных игрока с swgoh.gg"""
-    url = f"https://swgoh.gg/api/player/{ally_code}/"
+# ========== Загрузка кэша ==========
+def load_caches():
+    """Загружает кэши из файлов"""
+    global _characters_cache, _game_data_cache
     
-    headers = {
-        **REQUEST_HEADERS,
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "ru,en;q=0.9",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache"
-    }
-    
-    try:
-        # Добавляем случайную задержку между запросами
-        await asyncio.sleep(REQUEST_DELAY * (retry + 0.5))
-        
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as response:
-            status = response.status
-            
-            if status == 403:
-                logger.warning(f"403 Forbidden для {ally_code}, попытка {retry + 1}/{MAX_RETRIES}")
-                if retry < MAX_RETRIES - 1:
-                    await asyncio.sleep(3 * (retry + 1))  # Экспоненциальная задержка
-                    return await fetch_player_data_async(session, ally_code, retry + 1)
-                return None
-            
-            if status == 404:
-                logger.warning(f"404 Not Found для {ally_code}")
-                return None
-            
-            if status != 200:
-                logger.warning(f"Статус {status} для {ally_code}")
-                if retry < MAX_RETRIES - 1:
-                    await asyncio.sleep(2)
-                    return await fetch_player_data_async(session, ally_code, retry + 1)
-                return None
-            
-            # Проверяем Content-Type
-            content_type = response.headers.get('Content-Type', '')
-            if 'application/json' not in content_type:
-                # Может быть HTML от Cloudflare
-                text = await response.text()
-                if 'cloudflare' in text.lower() or 'ddos' in text.lower():
-                    logger.warning(f"Cloudflare защита для {ally_code}")
-                    if retry < MAX_RETRIES - 1:
-                        await asyncio.sleep(5)
-                        return await fetch_player_data_async(session, ally_code, retry + 1)
-                return None
-            
-            data = await response.json()
-            
-            # Проверяем валидность данных
-            if not data or 'data' not in data:
-                logger.warning(f"Невалидные данные для {ally_code}")
-                return None
-            
-            return data
-            
-    except asyncio.TimeoutError:
-        logger.warning(f"Таймаут для {ally_code}")
-        if retry < MAX_RETRIES - 1:
-            await asyncio.sleep(2)
-            return await fetch_player_data_async(session, ally_code, retry + 1)
-        return None
-    except aiohttp.ClientError as e:
-        logger.error(f"Клиентская ошибка для {ally_code}: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Ошибка для {ally_code}: {e}")
-        return None
-
-
-async def get_players_data_batch(players: list, progress_callback=None) -> list:
-    """Пакетная загрузка данных игроков с ограничением по параллельным запросам"""
-    results = []
-    semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
-    
-    # Создаём сессию с куками
-    connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT_REQUESTS, ttl_dns_cache=300)
-    
-    async with aiohttp.ClientSession(connector=connector) as session:
-        # Сначала получаем главную страницу для установки кук
+    # Загружаем кэш персонажей
+    if os.path.exists(CHARACTERS_CACHE_FILE):
         try:
-            async with session.get('https://swgoh.gg/', headers=REQUEST_HEADERS) as resp:
-                logger.info(f"Главная страница: {resp.status}")
+            with open(CHARACTERS_CACHE_FILE, 'r', encoding='utf-8') as f:
+                _characters_cache = json.load(f)
+            logger.info(f"Загружен кэш персонажей: {len(_characters_cache)} записей")
         except Exception as e:
-            logger.warning(f"Не удалось загрузить главную страницу: {e}")
-        
-        tasks = []
-        for idx, player in enumerate(players):
-            async def fetch_with_semaphore(p, i):
-                async with semaphore:
-                    logger.info(f"[{i+1}/{len(players)}] Загружаю {p['player_name']}...")
-                    data = await fetch_player_data_async(session, p['ally_code'])
-                    
-                    if progress_callback:
-                        await progress_callback(i, len(players), p['player_name'], data is not None)
-                    
-                    return {
-                        'player_name': p['player_name'],
-                        'ally_code': p['ally_code'],
-                        'data': data
-                    }
-            
-            tasks.append(fetch_with_semaphore(player, idx))
-        
-        results = await asyncio.gather(*tasks)
+            logger.error(f"Ошибка загрузки кэша персонажей: {e}")
+            _characters_cache = {}
     
-    return results
+    # Загружаем кэш игровых данных
+    if os.path.exists(GAME_DATA_CACHE_FILE):
+        try:
+            with open(GAME_DATA_CACHE_FILE, 'r', encoding='utf-8') as f:
+                _game_data_cache = json.load(f)
+            logger.info("Загружен кэш игровых данных")
+        except Exception as e:
+            logger.error(f"Ошибка загрузки кэша игровых данных: {e}")
+            _game_data_cache = {}
 
-
-def get_player_ally_codes():
-    """Извлекает ally_code всех игроков из guild_data.json"""
-    if not os.path.exists(JSON_FILE_PATH):
-        return []
-    
+def save_character_cache():
+    """Сохраняет кэш персонажей в файл"""
     try:
-        with open(JSON_FILE_PATH, 'r', encoding='utf-8') as f:
-            guild_data = json.load(f)
-        
-        members = guild_data.get('data', {}).get('members', [])
-        ally_codes = []
-        
-        for member in members:
-            ally_code = member.get('ally_code')
-            player_name = member.get('player_name', 'Unknown')
-            if ally_code:
-                ally_codes.append({
-                    'ally_code': ally_code,
-                    'player_name': player_name
-                })
-        
-        logger.info(f"Найдено {len(ally_codes)} игроков с ally_code")
-        return ally_codes
-        
+        with open(CHARACTERS_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(_characters_cache, f, indent=2, ensure_ascii=False)
+        logger.info("Кэш персонажей сохранен")
     except Exception as e:
-        logger.error(f"Ошибка при получении ally_code: {e}")
-        return []
+        logger.error(f"Ошибка сохранения кэша персонажей: {e}")
 
+def save_game_data_cache():
+    """Сохраняет игровые данные в файл"""
+    try:
+        with open(GAME_DATA_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(_game_data_cache, f, indent=2, ensure_ascii=False)
+        logger.info("Кэш игровых данных сохранен")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения кэша игровых данных: {e}")
 
-def find_character_in_player(player_data, character_name):
-    """Ищет персонажа в данных игрока с поддержкой маппинга"""
-    if not player_data or 'data' not in player_data:
+# ========== Инициализация Comlink клиента ==========
+def get_comlink_client():
+    """Создает и возвращает клиент Comlink"""
+    try:
+        from swgoh_comlink import SwgohComlink
+        return SwgohComlink(url=COMLINK_URL)
+    except ImportError:
+        logger.error("Библиотека swgoh_comlink не установлена")
+        return None
+    except Exception as e:
+        logger.error(f"Ошибка подключения к Comlink: {e}")
+        return None
+
+def get_game_data(force_update: bool = False):
+    """Получает игровые данные (с кэшированием)"""
+    global _game_data_cache
+    
+    if not force_update and _game_data_cache:
+        return _game_data_cache
+    
+    comlink = get_comlink_client()
+    if not comlink:
         return None
     
-    units = player_data.get('data', {}).get('units', [])
-    search_name_lower = character_name.lower()
+    try:
+        logger.info("Запрос игровых данных из Comlink...")
+        game_data = comlink.get_game_data()
+        
+        _game_data_cache = game_data
+        save_game_data_cache()
+        
+        logger.info("Игровые данные успешно получены")
+        return game_data
+    except Exception as e:
+        logger.error(f"Ошибка получения игровых данных: {e}")
+        return _game_data_cache if _game_data_cache else None
+
+def get_character_list(force_update: bool = False) -> List[Dict[str, Any]]:
+    """Получает список всех персонажей из игровых данных"""
+    global _characters_cache
     
-    for unit in units:
-        unit_data = unit.get('data', {})
-        unit_name = unit_data.get('name', '')
-        unit_base_id = unit_data.get('base_id', '')
+    if not force_update and _characters_cache.get('characters'):
+        return _characters_cache['characters']
+    
+    game_data = get_game_data(force_update)
+    if not game_data:
+        return []
+    
+    characters = []
+    
+    try:
+        # Персонажи находятся в game_data['character_list']
+        if 'character_list' in game_data:
+            for char_id, char_data in game_data['character_list'].items():
+                character = {
+                    'id': char_id,
+                    'name': char_data.get('name', char_id),
+                    'base_id': char_data.get('base_id', char_id),
+                    'power': char_data.get('power', 0),
+                    'alignment': char_data.get('alignment', 'unknown'),
+                    'combat_type': char_data.get('combat_type', 1),  # 1 = character, 2 = ship
+                }
+                
+                # Получаем дополнительную информацию
+                if 'skill_data' in char_data:
+                    character['skills'] = len(char_data.get('skill_data', {}))
+                
+                characters.append(character)
         
-        # Точное совпадение по имени
-        if unit_name.lower() == search_name_lower:
-            logger.info(f"Найден точный match: {unit_name}")
-            return _extract_character_data(unit_data, unit_name)
+        # Сортируем по имени
+        characters.sort(key=lambda x: x['name'].lower())
         
-        # Частичное совпадение по имени
-        if search_name_lower in unit_name.lower():
-            logger.info(f"Найден частичный match: {unit_name}")
-            return _extract_character_data(unit_data, unit_name)
+        _characters_cache['characters'] = characters
+        _characters_cache['last_update'] = datetime.now().isoformat()
+        save_character_cache()
         
-        # Поиск по base_id
-        if search_name_lower in unit_base_id.lower():
-            logger.info(f"Найден match по base_id: {unit_base_id}")
-            return _extract_character_data(unit_data, unit_name)
+        logger.info(f"Загружено {len(characters)} персонажей")
+        return characters
         
-        # Поиск по имени без скобок и кавычек
-        clean_name = unit_name.split('(')[0].split('"')[0].strip().lower()
-        if search_name_lower == clean_name:
-            logger.info(f"Найден clean name match: {clean_name}")
-            return _extract_character_data(unit_data, unit_name)
+    except Exception as e:
+        logger.error(f"Ошибка парсинга списка персонажей: {e}")
+        return []
+
+def search_character(query: str) -> Optional[Dict[str, Any]]:
+    """Ищет персонажа по имени или ID"""
+    characters = get_character_list()
+    if not characters:
+        return None
+    
+    query_lower = query.lower().strip()
+    
+    # Точное совпадение по имени
+    for char in characters:
+        if char['name'].lower() == query_lower:
+            return char
+    
+    # Частичное совпадение
+    matches = [char for char in characters if query_lower in char['name'].lower()]
+    
+    if matches:
+        return matches[0]
     
     return None
 
+def get_player_info(allycode: int) -> Optional[Dict[str, Any]]:
+    """Получает информацию об игроке по allycode"""
+    comlink = get_comlink_client()
+    if not comlink:
+        return None
+    
+    try:
+        logger.info(f"Запрос информации об игроке {allycode}...")
+        player_data = comlink.get_player(allycode=allycode)
+        return player_data
+    except Exception as e:
+        logger.error(f"Ошибка получения игрока {allycode}: {e}")
+        return None
 
-def _extract_character_data(unit_data, unit_name):
-    """Извлекает данные персонажа"""
-    return {
-        'name': unit_name,
-        'gear_level': unit_data.get('gear_level', 0),
-        'relic_tier': unit_data.get('relic_tier'),
-        'level': unit_data.get('level', 0),
-        'power': unit_data.get('power', 0),
-        'rarity': unit_data.get('rarity', 0),
-        'zeta_abilities': len(unit_data.get('zeta_abilities', [])),
-        'has_ultimate': unit_data.get('has_ultimate', False),
-        'is_galactic_legend': unit_data.get('is_galactic_legend', False)
-    }
+def format_character_info(character: Dict[str, Any]) -> str:
+    """Форматирует информацию о персонаже для вывода"""
+    message = f"🎭 *{escape_markdown(character['name'])}*\n"
+    message += f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+    
+    # Основная информация
+    message += f"📋 **ID:** `{character['id']}`\n"
+    
+    # Альянс
+    alignment = character.get('alignment', 'unknown')
+    alignment_emoji = {
+        'light': '⚪',
+        'dark': '⚫',
+        'neutral': '🟡',
+        'unknown': '❓'
+    }.get(alignment, '❓')
+    message += f"{alignment_emoji} **Альянс:** {alignment.capitalize()}\n"
+    
+    # Тип
+    combat_type = character.get('combat_type', 1)
+    type_str = "👤 Персонаж" if combat_type == 1 else "🚀 Корабль"
+    message += f"**Тип:** {type_str}\n"
+    
+    # Сила (GP)
+    if character.get('power', 0) > 0:
+        power = character['power']
+        message += f"⚔️ **Базовая сила:** {power:,}\n".replace(',', ' ')
+    
+    # Количество способностей
+    if character.get('skills', 0) > 0:
+        message += f"✨ **Способностей:** {character['skills']}\n"
+    
+    return message
 
-
-async def scan_all_players_for_character_async(character_name, status_message=None, update=None):
-    """Асинхронно сканирует всех игроков гильдии в поисках указанного персонажа"""
-    players = get_player_ally_codes()
-    total = len(players)
-    normalized_name = normalize_character_name(character_name)
-    
-    logger.info(f"Поиск персонажа: '{character_name}' -> нормализовано: '{normalized_name}'")
-    
-    results = []
-    failed_players = []
-    
-    async def progress_callback(idx, total, player_name, success):
-        if status_message and idx % 5 == 0:  # Обновляем статус каждые 5 игроков
-            try:
-                await status_message.edit_text(
-                    f"🔍 Ищу персонажа *{normalized_name}*\n"
-                    f"📊 Прогресс: {idx+1}/{total}\n"
-                    f"✅ Найдено: {len(results)}\n"
-                    f"❌ Ошибок: {len(failed_players)}\n\n"
-                    f"⏳ Пожалуйста, подождите...",
-                    parse_mode='Markdown'
-                )
-            except:
-                pass
-    
-    # Загружаем данные всех игроков
-    players_data = await get_players_data_batch(players, progress_callback)
-    
-    # Обрабатываем результаты
-    for player_data in players_data:
-        if player_data['data']:
-            character_data = find_character_in_player(player_data['data'], normalized_name)
-            
-            if not character_data:
-                character_data = find_character_in_player(player_data['data'], character_name)
-            
-            if character_data:
-                results.append({
-                    'player_name': player_data['player_name'],
-                    'ally_code': player_data['ally_code'],
-                    'character': character_data
-                })
-                logger.info(f"  ✅ Найден {character_data['name']} у {player_data['player_name']}")
-        else:
-            failed_players.append(player_data['player_name'])
-            logger.info(f"  ❌ Не удалось загрузить данные для {player_data['player_name']}")
-    
-    return results, failed_players
-
-
-# ========== Команды ==========
+# ========== Команды Telegram ==========
 async def unit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Ищет указанного персонажа у всех игроков гильдии (асинхронная версия)"""
-    username = update.effective_user.username
-    
+    """Поиск информации о персонаже по имени"""
     if not context.args:
         await update.message.reply_text(
             "❌ Укажите имя персонажа.\n"
-            "Пример: /unit General Hux\n"
-            "Пример: /unit Lord Vader\n\n"
-            "💡 Можно использовать сокращения:\n"
-            "• /unit LV - Lord Vader\n"
-            "• /unit JMK - Jedi Master Kenobi\n"
-            "• /unit SLKR - Supreme Leader Kylo Ren"
+            "Примеры:\n"
+            "/unit Darth Vader\n"
+            "/unit Rey\n"
+            "/unit B1\n\n"
+            "💡 Поддерживаются как полные имена, так и сокращения."
         )
         return
     
-    character_name = ' '.join(context.args).strip()
-    normalized_name = normalize_character_name(character_name)
+    query = ' '.join(context.args).strip()
     
-    # Проверяем, что данные гильдии загружены
-    if not os.path.exists(JSON_FILE_PATH):
-        await update.message.reply_text(
-            "❌ Файл с данными гильдии не найден.\n"
-            "Сначала выполните команду /update для загрузки данных."
-        )
-        return
+    # Отправляем сообщение о начале поиска
+    status_msg = await update.message.reply_text(f"🔍 Ищу персонажа *{escape_markdown(query)}*...", parse_mode='Markdown')
     
-    players = get_player_ally_codes()
-    total_players = len(players)
+    character = search_character(query)
     
-    if total_players == 0:
-        await update.message.reply_text(
-            "❌ Не удалось найти ally_code игроков.\n"
-            "Проверьте, что файл guild_data.json содержит корректные данные."
-        )
-        return
-    
-    status_message = await update.message.reply_text(
-        f"🔍 Ищу персонажа *{normalized_name}*...\n"
-        f"📊 Всего игроков: {total_players}\n"
-        f"⚙️ Режим: асинхронный ({MAX_CONCURRENT_REQUESTS} запросов одновременно)\n\n"
-        f"⏳ Начинаю поиск..."
-    )
-    
-    try:
-        results, failed_players = await scan_all_players_for_character_async(
-            character_name, 
-            status_message, 
-            update
-        )
-        
-        if not results:
-            fail_note = ""
-            if failed_players:
-                fail_note = f"\n\n⚠️ Не удалось загрузить данные для {len(failed_players)} игроков.\n"
-                fail_note += "Возможно, swgoh.gg временно недоступен."
-            
-            await status_message.edit_text(
-                f"❌ Персонаж *{normalized_name}* не найден ни у одного из {total_players} игроков.{fail_note}\n\n"
-                f"💡 Попробуйте:\n"
-                f"• Другое написание или сокращение\n"
-                f"• Подождать несколько минут (защита Cloudflare)\n"
-                f"• /unit_info [игрок] [персонаж] для конкретного игрока"
-            )
-            return
-        
-        # Формируем ответ
-        message = f"🔍 *Результаты поиска '{normalized_name}':*\n\n"
-        message += f"✅ Найден у {len(results)} из {total_players} игроков:\n\n"
-        
-        for i, result in enumerate(results, 1):
-            player_name = result['player_name']
-            char_data = result['character']
-            gear_level = char_data.get('gear_level', 'N/A')
-            relic_tier = char_data.get('relic_tier', 'N/A')
-            power = char_data.get('power', 'N/A')
-            zeta_count = char_data.get('zeta_abilities', 0)
-            is_gl = char_data.get('is_galactic_legend', False)
-            
-            gl_marker = " 👑" if is_gl else ""
-            relic_str = f" 💎{relic_tier}" if relic_tier and relic_tier > 0 else ""
-            
-            message += f"{i}. *{player_name}*{gl_marker}\n"
-            message += f"   🛡️{gear_level}{relic_str} | 📊 {power:,}\n".replace(',', ' ')
-            if zeta_count > 0:
-                message += f"   ✨ Зета: {zeta_count}\n"
-            message += "\n"
-            
-            # Если сообщение становится слишком длинным
-            if len(message) > 3500:
-                message += f"\n... и ещё {len(results) - i} игроков"
-                break
-        
-        if failed_players:
-            message += f"\n⚠️ Не удалось проверить {len(failed_players)} игроков из-за ограничений сервера."
-        
-        await status_message.edit_text(message, parse_mode='Markdown')
-        
-        logger.info(f"Поиск '{character_name}': найдено {len(results)} результатов, ошибок {len(failed_players)}")
-        
-    except Exception as e:
-        logger.error(f"Ошибка при поиске: {e}", exc_info=True)
-        await status_message.edit_text(
-            f"❌ Ошибка: {str(e)[:200]}\n\n"
-            f"Попробуйте позже или используйте /unit_info для конкретного игрока."
-        )
-
-
-async def unit_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает информацию о конкретном юните у конкретного игрока (синхронная версия для одного игрока)"""
-    if len(context.args) < 2:
-        await update.message.reply_text(
-            "❌ Укажите игрока и персонажа.\n"
-            "Пример: /unit_info Qbik General Hux\n"
-            "Пример: /unit_info Qbik LV\n\n"
-            "Имя игрока можно взять из команды /guild"
-        )
-        return
-    
-    player_name = context.args[0]
-    character_name = ' '.join(context.args[1:]).strip()
-    normalized_name = normalize_character_name(character_name)
-    
-    # Получаем ally_code игрока
-    if not os.path.exists(JSON_FILE_PATH):
-        await update.message.reply_text(
-            "❌ Файл с данными гильдии не найден.\n"
-            "Сначала выполните команду /update для загрузки данных."
-        )
-        return
-    
-    try:
-        with open(JSON_FILE_PATH, 'r', encoding='utf-8') as f:
-            guild_data = json.load(f)
-        
-        members = guild_data.get('data', {}).get('members', [])
-        ally_code = None
-        actual_player_name = player_name
-        
-        for member in members:
-            if member.get('player_name', '').lower() == player_name.lower():
-                ally_code = member.get('ally_code')
-                actual_player_name = member.get('player_name')
-                break
-        
-        if not ally_code:
-            matches = [m.get('player_name') for m in members if player_name.lower() in m.get('player_name', '').lower()]
-            if matches:
-                await update.message.reply_text(
-                    f"❌ Игрок \"{player_name}\" не найден.\n\n"
-                    f"💡 Возможно, вы имели в виду:\n" + "\n".join([f"• {name}" for name in matches[:5]])
-                )
-            else:
-                await update.message.reply_text(
-                    f"❌ Игрок \"{player_name}\" не найден.\n"
-                    f"Используйте /guild для просмотра списка всех игроков."
-                )
-            return
-        
-        status_message = await update.message.reply_text(
-            f"🔍 Загружаю данные игрока *{actual_player_name}* (ally_code: {ally_code})...",
+    if not character:
+        await status_msg.edit_text(
+            f"❌ Персонаж *{escape_markdown(query)}* не найден.\n\n"
+            f"💡 Попробуйте использовать:\n"
+            f"• Полное имя персонажа\n"
+            f"• Часть имени\n"
+            f"• /unit_info для поиска по дополнительным параметрам",
             parse_mode='Markdown'
         )
-        
-        player_data = download_player_data(ally_code)
-        
-        if not player_data:
-            await status_message.edit_text(
-                f"❌ Не удалось загрузить данные игрока *{actual_player_name}*.\n\n"
-                f"Возможные причины:\n"
-                f"• Нет соединения с swgoh.gg\n"
-                f"• Сайт временно недоступен\n"
-                f"• Неверный ally_code",
-                parse_mode='Markdown'
-            )
-            return
-        
-        # Пробуем найти по нормализованному имени
-        character_data = find_character_in_player(player_data, normalized_name)
-        
-        # Если не нашли, пробуем по оригинальному
-        if not character_data:
-            character_data = find_character_in_player(player_data, character_name)
-        
-        if not character_data:
-            await status_message.edit_text(
-                f"❌ У игрока *{actual_player_name}* не найден персонаж *{character_name}*.\n\n"
-                f"💡 Проверьте правильность написания или используйте /unit для поиска.",
-                parse_mode='Markdown'
-            )
-            return
-        
-        # Формируем детальную информацию
-        gear_level = character_data.get('gear_level', 'N/A')
-        relic_tier = character_data.get('relic_tier', 'N/A')
-        power = character_data.get('power', 'N/A')
-        level = character_data.get('level', 'N/A')
-        rarity = character_data.get('rarity', 'N/A')
-        zeta_count = character_data.get('zeta_abilities', 0)
-        is_gl = character_data.get('is_galactic_legend', False)
-        has_ultimate = character_data.get('has_ultimate', False)
-        
-        gl_marker = " 👑 Галактическая Легенда" if is_gl else ""
-        ultimate_marker = " 🔥 Ультимейт разблокирован" if has_ultimate else ""
-        
-        message = f"📊 *Информация о персонаже*\n\n"
-        message += f"👤 *Игрок:* {actual_player_name}\n"
-        message += f"⚔️ *Персонаж:* {character_data['name']}{gl_marker}{ultimate_marker}\n"
-        message += f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-        message += f"📈 *Характеристики:*\n"
-        message += f"• Уровень: {level}\n"
-        message += f"• Снаряжение: {gear_level}\n"
-        if relic_tier and relic_tier > 0:
-            message += f"• Реликвия: {relic_tier}\n"
-        message += f"• Сила: {power:,}\n".replace(',', ' ')
-        message += f"• Звездность: {rarity}/7\n"
-        message += f"• Зета-способности: {zeta_count}\n"
-        
-        await status_message.edit_text(message, parse_mode='Markdown')
-        
-        logger.info(f"Запрошена информация о {character_name} у игрока {actual_player_name}")
-        
-    except Exception as e:
-        logger.error(f"Ошибка: {e}", exc_info=True)
+        return
+    
+    # Форматируем информацию
+    message = format_character_info(character)
+    
+    await status_msg.edit_text(message, parse_mode='Markdown')
+    logger.info(f"Пользователь @{update.effective_user.username} запросил персонажа: {query} -> {character['name']}")
+
+async def unit_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Расширенная информация о персонаже (с поиском по игрокам)"""
+    if len(context.args) < 2:
         await update.message.reply_text(
-            f"❌ Ошибка: {str(e)[:200]}"
+            "❌ Неправильный формат команды.\n\n"
+            "📝 **Способы использования:**\n\n"
+            "1️⃣ **Поиск персонажа у игрока:**\n"
+            "`/unit_info @username имя_персонажа`\n"
+            "Пример: `/unit_info @KuBiK90 Darth Vader`\n\n"
+            "2️⃣ **Поиск персонажа по allycode:**\n"
+            "`/unit_info allycode имя_персонажа`\n"
+            "Пример: `/unit_info 245866537 Rey`\n\n"
+            "3️⃣ **Поиск информации о персонаже:**\n"
+            "`/unit_info имя_персонажа`\n"
+            "Пример: `/unit_info Jedi Master Kenobi`\n\n"
+            "💡 Игрок должен быть привязан к Telegram через команду /add",
+            parse_mode='Markdown'
         )
+        return
+    
+    # Определяем тип запроса
+    first_arg = context.args[0]
+    character_name = ' '.join(context.args[1:]) if len(context.args) > 1 else ''
+    
+    # Запрос только персонажа (без привязки к игроку)
+    if len(context.args) == 1:
+        character_name = first_arg
+        character = search_character(character_name)
+        
+        if not character:
+            await update.message.reply_text(f"❌ Персонаж *{escape_markdown(character_name)}* не найден.", parse_mode='Markdown')
+            return
+        
+        message = format_character_info(character)
+        await update.message.reply_text(message, parse_mode='Markdown')
+        return
+    
+    # Запрос персонажа у конкретного игрока
+    character = search_character(character_name)
+    if not character:
+        await update.message.reply_text(f"❌ Персонаж *{escape_markdown(character_name)}* не найден.", parse_mode='Markdown')
+        return
+    
+    # Определяем игрока
+    player_identifier = first_arg
+    allycode = None
+    telegram_username = None
+    
+    if player_identifier.startswith('@'):
+        telegram_username = player_identifier[1:]
+    elif player_identifier.isdigit() and len(player_identifier) >= 8:
+        allycode = int(player_identifier)
+    else:
+        await update.message.reply_text(
+            "❌ Неверный формат идентификатора игрока.\n"
+            "Используйте:\n"
+            "• @username - для поиска по Telegram\n"
+            "• allycode - для поиска по коду (9 цифр)",
+            parse_mode='Markdown'
+        )
+        return
+    
+    status_msg = await update.message.reply_text(
+        f"🔍 Ищу персонажа *{escape_markdown(character['name'])}* у игрока...",
+        parse_mode='Markdown'
+    )
+    
+    # Получаем данные игрока
+    player_data = None
+    
+    if allycode:
+        player_data = get_player_info(allycode)
+    elif telegram_username:
+        # Ищем игрока по привязке Telegram
+        from .admin import get_nickname
+        nicknames = load_json_file('data/nicknames.json', {})
+        
+        player_name = None
+        for name, tg_username in nicknames.items():
+            if tg_username == telegram_username:
+                player_name = name
+                break
+        
+        if player_name:
+            # Получаем данные гильдии и ищем игрока
+            from .data_handlers import parse_guild_data
+            result = parse_guild_data()
+            if 'success' in result:
+                for player in result['players_raw']:
+                    if player['player_name'] == player_name:
+                        player_allycode = player.get('ally_code')
+                        if player_allycode:
+                            player_data = get_player_info(player_allycode)
+                        break
+    
+    if not player_data:
+        await status_msg.edit_text(
+            f"❌ Не удалось найти игрока.\n\n"
+            f"💡 Убедитесь, что:\n"
+            f"• Игрок привязан к Telegram через команду /add\n"
+            f"• Allycode указан верно\n"
+            f"• Данные гильдии обновлены (/update)",
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Ищем персонажа в ростре игрока
+    roster = player_data.get('rosterUnit', [])
+    found_unit = None
+    
+    for unit in roster:
+        unit_def_id = unit.get('definitionId', '')
+        unit_name = unit.get('definitionId', '').lower()
+        
+        if character['id'].lower() in unit_def_id.lower() or character['name'].lower() in unit_name:
+            found_unit = unit
+            break
+    
+    if not found_unit:
+        await status_msg.edit_text(
+            f"❌ У игрока *{escape_markdown(player_data.get('name', 'Неизвестно'))}* не найден персонаж *{escape_markdown(character['name'])}*.\n\n"
+            f"💡 Возможно, персонаж:\n"
+            f"• Еще не разблокирован\n"
+            f"• Имеет другое имя в игре",
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Формируем подробную информацию о персонаже у игрока
+    message = f"🎭 *{escape_markdown(character['name'])}* у игрока *{escape_markdown(player_data.get('name', 'Неизвестно'))}*\n"
+    message += f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+    
+    # Характеристики персонажа
+    gp = found_unit.get('gp', 0)
+    if gp > 0:
+        message += f"⚔️ **GP:** {gp:,}\n".replace(',', ' ')
+    
+    rarity = found_unit.get('rarity', 0)
+    if rarity > 0:
+        message += f"⭐ **Звездность:** {rarity}/7\n"
+    
+    level = found_unit.get('level', 0)
+    if level > 0:
+        message += f"📊 **Уровень:** {level}/85\n"
+    
+    gear = found_unit.get('gear', 0)
+    if gear > 0:
+        message += f"🔧 **Уровень снаряжения:** {gear}/13\n"
+    
+    # Релики
+    relic_tier = found_unit.get('relic', {}).get('tier', 0) if 'relic' in found_unit else 0
+    if relic_tier > 0:
+        message += f"💎 **Реликвия:** {relic_tier}\n"
+    
+    # Моды
+    mods = found_unit.get('mods', [])
+    if mods:
+        mods_count = len(mods)
+        message += f"💿 **Модов:** {mods_count}/6\n"
+    
+    # Способности
+    skills = found_unit.get('skills', [])
+    if skills:
+        skill_names = []
+        for skill in skills[:4]:  # Показываем первые 4 способности
+            skill_tier = skill.get('tier', 0)
+            if skill_tier > 0:
+                skill_names.append(f"Ур. {skill_tier}")
+        
+        if skill_names:
+            message += f"✨ **Способности:** {', '.join(skill_names)}\n"
+    
+    # Звания (для отрядов)
+    if 'reputation' in found_unit:
+        rep = found_unit['reputation']
+        message += f"🏅 **Репутация:** Уровень {rep}\n"
+    
+    await status_msg.edit_text(message, parse_mode='Markdown')
+    logger.info(f"Пользователь @{update.effective_user.username} запросил инфо о {character['name']} у игрока {player_data.get('name')}")
+
+async def load_characters_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Принудительная загрузка списка персонажей (только для админов)"""
+    username = update.effective_user.username
+    if not username or not is_admin(username):
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+        return
+    
+    status_msg = await update.message.reply_text("🔄 Загружаю список персонажей из Comlink...\nЭто может занять несколько секунд...")
+    
+    characters = get_character_list(force_update=True)
+    
+    if characters:
+        await status_msg.edit_text(
+            f"✅ Загружено {len(characters)} персонажей.\n"
+            f"🕒 Кэш обновлен: {datetime.now().strftime('%Y-%Y-%m-%d %H:%M:%S')}\n\n"
+            f"Теперь можно использовать команды:\n"
+            f"/unit - поиск персонажа\n"
+            f"/unit_info - расширенная информация"
+        )
+    else:
+        await status_msg.edit_text(
+            "❌ Не удалось загрузить список персонажей.\n\n"
+            "Проверьте:\n"
+            "• Доступность Comlink сервера\n"
+            "• Правильность URL в настройках"
+        )
+
+# ========== Инициализация при запуске ==========
+load_caches()
+
+# Если кэш пуст, загружаем данные в фоне (при первом вызове)
+if not _characters_cache:
+    logger.info("Кэш персонажей пуст, данные будут загружены при первом запросе")
